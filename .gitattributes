@@ -1,0 +1,10 @@
+# Normalise line endings: Git stores LF, checks out native.
+* text=auto
+
+# Binary assets — never touch.
+*.png binary
+*.jpg binary
+*.pdf binary
+*.docx binary
+*.zip binary
+*.traineddata binary
