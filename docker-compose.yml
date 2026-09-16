@@ -1,0 +1,59 @@
+# Production-oriented compose: PostgreSQL + API + web, wired with health gating.
+# Copy .env.docker.example to .env and set a real BHULEKH_SECRET_KEY before `up`.
+name: bhulekh-ai
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-bhulekh}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-bhulekh}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-bhulekh}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    # Not published to the host: only the API talks to it.
+    expose:
+      - "5432"
+
+  api:
+    build: ./backend
+    restart: unless-stopped
+    environment:
+      BHULEKH_ENVIRONMENT: ${BHULEKH_ENVIRONMENT:-production}
+      BHULEKH_SECRET_KEY: ${BHULEKH_SECRET_KEY:?set BHULEKH_SECRET_KEY in .env}
+      BHULEKH_DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-bhulekh}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-bhulekh}
+      BHULEKH_CORS_ORIGINS: ${BHULEKH_CORS_ORIGINS:-http://localhost:8080}
+      BHULEKH_TRUSTED_HOSTS: ${BHULEKH_TRUSTED_HOSTS:-localhost,api}
+      BHULEKH_SEED_DEMO_DATA: ${BHULEKH_SEED_DEMO_DATA:-false}
+      BHULEKH_OCR_LANGUAGES: ${BHULEKH_OCR_LANGUAGES:-eng+hin}
+      BHULEKH_HSTS_ENABLED: ${BHULEKH_HSTS_ENABLED:-false}
+    volumes:
+      - storage:/app/storage
+    depends_on:
+      db:
+        condition: service_healthy
+    # Run migrations, then start the server.
+    command: >
+      sh -c "alembic upgrade head &&
+             gunicorn app.main:app --worker-class uvicorn.workers.UvicornWorker
+             --workers 2 --bind 0.0.0.0:8000 --timeout 180 --access-logfile -"
+    expose:
+      - "8000"
+
+  web:
+    build: ./frontend
+    restart: unless-stopped
+    depends_on:
+      - api
+    ports:
+      - "${WEB_PORT:-8080}:80"
+
+volumes:
+  pgdata:
+  storage:

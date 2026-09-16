@@ -1,0 +1,82 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend — lint, migrate, test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install OCR system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            tesseract-ocr tesseract-ocr-hin tesseract-ocr-mar poppler-utils \
+            libgl1 libglib2.0-0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Lint (ruff)
+        run: ruff check .
+
+      - name: Verify Alembic migration applies from empty
+        env:
+          BHULEKH_DATABASE_URL: sqlite:///./ci_migrate.db
+          BHULEKH_SECRET_KEY: ci-migration-check
+        run: alembic upgrade head
+
+      - name: Generate sample documents
+        run: python samples/generate_samples.py
+
+      - name: Run tests with coverage
+        env:
+          BHULEKH_SECRET_KEY: ci-secret-not-for-production-abcdefghij
+          BHULEKH_RATE_LIMIT_ENABLED: "false"
+          BHULEKH_LOG_JSON: "false"
+        run: pytest --cov=app --cov-report=term-missing
+
+  frontend:
+    name: Frontend — build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - run: npm run build
+
+  docker:
+    name: Docker — build images
+    runs-on: ubuntu-latest
+    needs: [backend, frontend]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build backend image
+        run: docker build -t bhulekh-ai-backend:ci ./backend
+      - name: Build frontend image
+        run: docker build -t bhulekh-ai-frontend:ci ./frontend

@@ -1,0 +1,93 @@
+:root {
+  --bg: #f4f6f9; --panel: #ffffff; --ink: #1c2530; --muted: #6b7684; --line: #e2e7ee;
+  --brand: #1f4e79; --brand-2: #2e75b6; --ok: #2e8b57; --warn: #d98c00; --err: #c0392b; --info: #4a6fa5;
+  --radius: 10px; --shadow: 0 1px 3px rgba(20, 30, 50, 0.08);
+  font-family: "Segoe UI", Inter, system-ui, sans-serif; color: var(--ink);
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); font-size: 14px; }
+a { color: var(--brand-2); text-decoration: none; }
+button, input, select, textarea { font: inherit; }
+
+.layout { display: grid; grid-template-columns: 230px 1fr; min-height: 100vh; }
+.sidebar { background: var(--brand); color: #fff; padding: 18px 14px; display: flex; flex-direction: column; gap: 4px; }
+.brand { font-weight: 700; font-size: 18px; margin-bottom: 4px; }
+.brand small { display: block; font-weight: 400; font-size: 11px; opacity: 0.8; }
+.nav a { display: block; padding: 9px 12px; border-radius: 8px; color: #dbe7f5; }
+.nav a.active, .nav a:hover { background: rgba(255,255,255,0.14); color: #fff; }
+.sidebar .user { margin-top: auto; font-size: 12px; opacity: 0.9; border-top: 1px solid rgba(255,255,255,0.2); padding-top: 12px; }
+.sidebar .user button { margin-top: 6px; }
+main { padding: 24px 28px; max-width: 1400px; }
+h1 { font-size: 22px; margin: 0 0 16px; }
+h2 { font-size: 16px; margin: 0 0 10px; }
+
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 16px; box-shadow: var(--shadow); }
+.grid { display: grid; gap: 14px; }
+.grid.kpi { grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); }
+.grid.two { grid-template-columns: 1fr 1fr; }
+@media (max-width: 1000px) { .grid.two { grid-template-columns: 1fr; } .layout { grid-template-columns: 1fr; } .sidebar { flex-direction: row; flex-wrap: wrap; } }
+.kpi .label { color: var(--muted); font-size: 12px; }
+.kpi .value { font-size: 26px; font-weight: 700; margin-top: 4px; }
+.kpi .sub { font-size: 12px; color: var(--muted); }
+
+.btn { background: var(--brand-2); color: #fff; border: 0; padding: 8px 14px; border-radius: 8px; cursor: pointer; }
+.btn:disabled { opacity: 0.5; cursor: default; }
+.btn.ghost { background: transparent; color: var(--brand-2); border: 1px solid var(--brand-2); }
+.btn.ok { background: var(--ok); } .btn.err { background: var(--err); }
+.btn.sm { padding: 5px 10px; font-size: 12px; }
+input[type=text], input[type=password], select, textarea { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; width: 100%; background: #fff; }
+label { font-size: 12px; color: var(--muted); display: block; margin-bottom: 4px; }
+.row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.field { margin-bottom: 10px; }
+
+table { width: 100%; border-collapse: collapse; }
+th, td { text-align: left; padding: 9px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { font-size: 12px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: 0.03em; }
+tr.clickable:hover { background: #f0f5fb; cursor: pointer; }
+
+.badge { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 600; }
+.badge.uploaded, .badge.processing, .badge.extracted { background: #e8eef7; color: var(--info); }
+.badge.pending_review { background: #fff3dc; color: var(--warn); }
+.badge.verified, .badge.auto_verified { background: #e3f4ea; color: var(--ok); }
+.badge.rejected, .badge.failed { background: #fbe4e1; color: var(--err); }
+.badge.error { background: #fbe4e1; color: var(--err); }
+.badge.warning { background: #fff3dc; color: var(--warn); }
+.badge.info { background: #e8eef7; color: var(--info); }
+
+.conf { display: inline-flex; align-items: center; gap: 6px; }
+.conf .bar { width: 70px; height: 6px; background: #e8ecf1; border-radius: 4px; overflow: hidden; }
+.conf .bar i { display: block; height: 100%; }
+.conf.hi .bar i { background: var(--ok); } .conf.mid .bar i { background: var(--warn); } .conf.lo .bar i { background: var(--err); }
+
+.dropzone { border: 2px dashed #b9c6d6; border-radius: var(--radius); padding: 36px; text-align: center; color: var(--muted); background: #fbfcfe; }
+.dropzone.active { border-color: var(--brand-2); background: #eef5fc; }
+.verify { display: grid; grid-template-columns: 1.1fr 1fr; gap: 16px; }
+/* Grid items default to min-width:auto, so the wide parcel table would otherwise
+   push its column open and squeeze the scan preview to nothing. */
+.verify > * { min-width: 0; }
+@media (max-width: 1100px) { .verify { grid-template-columns: 1fr; } }
+.imgbox { position: relative; overflow: auto; max-height: 78vh; border: 1px solid var(--line); border-radius: 8px; background: #222; }
+.imgbox img { display: block; max-width: 100%; }
+.imgbox .hl { position: absolute; border: 2px solid #ffb300; background: rgba(255,179,0,0.18); pointer-events: none; }
+.fieldrow { display: grid; grid-template-columns: 170px 1fr 120px; gap: 8px; align-items: center; padding: 6px 0; border-bottom: 1px solid var(--line); }
+.fieldrow.review input { border-color: var(--warn); background: #fffaf0; }
+.fieldrow .name { font-size: 12px; color: var(--muted); }
+.muted { color: var(--muted); }
+pre.ocr { white-space: pre-wrap; font-size: 12px; background: #f7f9fb; padding: 10px; border-radius: 8px; max-height: 260px; overflow: auto; }
+.login { min-height: 100vh; display: grid; place-items: center; background: linear-gradient(135deg, #1f4e79, #2e75b6); }
+.login .card { width: 380px; }
+.alert { padding: 10px 12px; border-radius: 8px; margin-bottom: 10px; }
+.alert.err { background: #fbe4e1; color: var(--err); } .alert.ok { background: #e3f4ea; color: var(--ok); }
+.alert.warn { background: #fff3dc; color: #8a5a00; border: 1px solid #f0d9a8; }
+.toolbar { display: flex; gap: 10px; align-items: end; flex-wrap: wrap; margin-bottom: 14px; }
+.toolbar > div { min-width: 150px; }
+.progress { height: 8px; background: #e8ecf1; border-radius: 4px; overflow: hidden; }
+.progress i { display: block; height: 100%; background: var(--ok); }
+
+/* Parcel grid on the verification screen */
+table.parcels { font-size: 12px; }
+table.parcels th { white-space: nowrap; }
+table.parcels td { padding: 3px 4px; }
+table.parcels input { padding: 5px 6px; font-size: 12px; }
+table.parcels tr.review input { border-color: var(--warn); background: #fffaf0; }
+table.parcels tbody tr:hover { background: #f0f5fb; cursor: pointer; }

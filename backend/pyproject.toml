@@ -1,0 +1,32 @@
+[project]
+name = "bhulekh-ai-backend"
+version = "1.1.0"
+description = "Intelligent Land Record Digitization & Validation System — API"
+requires-python = ">=3.11"
+
+[tool.ruff]
+line-length = 110
+target-version = "py311"
+exclude = ["alembic/versions", ".venv", "storage"]
+
+[tool.ruff.lint]
+# pycodestyle, pyflakes, isort, bugbear, comprehensions, pyupgrade.
+select = ["E", "F", "I", "B", "C4", "UP", "W"]
+ignore = [
+    "E501",   # line length is enforced by the formatter, not the linter
+    "B008",   # FastAPI Depends() in defaults is the framework idiom
+    "UP042",  # str+Enum is intentional (stable SQLAlchemy Enum serialisation)
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["B011"]
+"app/main.py" = ["E402", "E741"]        # settings imported before some modules; `l` is a language code
+# The OCR/pipeline code is dense numeric work where `l` (language) reads clearly and a few
+# compact `a; b` statements aid locality. These are deliberate, not accidental.
+"app/pipeline/*" = ["E741", "E702", "B905", "B007", "C401"]
+"samples/*" = ["E702", "B905"]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]
+filterwarnings = ["ignore::DeprecationWarning"]
