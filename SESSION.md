@@ -137,6 +137,25 @@ Picked up from the Next-steps list below; items 1–4 are now done and verified.
 Postgres); the CI job covers the SQLite migration. Pushing to GitHub is still a manual step
 (see "Pushing to GitHub" below) — this is not a git repo yet locally (`git init` needed).
 
+### 2026-09-16 (continued) — one-click cloud deploy (Render)
+- **Single-container deploy**: new root [`Dockerfile`](Dockerfile) (multi-stage) builds the
+  Vite SPA and serves it *from FastAPI* alongside the API + OCR on one origin — so the
+  deploy is one URL with no CORS and no cross-service wiring. FastAPI gains a guarded SPA
+  mount (`app.main._mount_frontend`, driven by `BHULEKH_FRONTEND_DIST`; a no-op in dev/tests)
+  with an `index.html` fallback for client-side routes (catches StaticFiles' 404
+  HTTPException raised under `html=True`).
+- **`render.yaml`** Blueprint: free Postgres + one Docker web service, `healthCheckPath:
+  /livez`, generated secret, `BHULEKH_ENVIRONMENT=staging` + `SEED_DEMO_DATA=true` so
+  reviewers get working demo logins and the schema is built via `create_all` (no alembic
+  step needed on the demo). Security middleware is active in every env.
+- **`.dockerignore`** keeps host state out of the image — notably `backend/.env` (which pins
+  a Windows `BHULEKH_TESSDATA_DIR` that would break OCR on Linux), `*.db`, `storage/`,
+  `node_modules/`, `.venv/`.
+- Verified locally (TestClient): `/` and `/documents/123` serve the SPA, `/livez` and the
+  API return JSON, staging seeding + `admin/Admin@12345` login works, security headers set.
+  Backend still 28/28, ruff clean. Docker image itself not built here (no local Docker);
+  it builds in Render / CI. README has a "Deploy to Render" button + steps.
+
 ---
 
 ## Important behaviour changes to know about

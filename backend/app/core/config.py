@@ -60,6 +60,12 @@ class Settings(BaseSettings):
     db_max_overflow: int = 10
     db_pool_recycle_s: int = 1800
 
+    # ---- Frontend (single-container deploy) ----
+    # When set to a directory holding a built SPA (index.html + assets), the API also
+    # serves it, so one service answers both the UI and the API on the same origin
+    # (no CORS). Unset in dev/tests, where the SPA is served separately by Vite/nginx.
+    frontend_dist: str | None = None
+
     # ---- Storage ----
     storage_dir: Path = Path("./storage")
     upload_dir: Path = Path("./storage/uploads")

@@ -107,6 +107,36 @@ language data"), or without administrator rights by putting `<lang>.traineddata`
 docker compose up --build       # web http://localhost:5173 · API http://localhost:8000/docs
 ```
 
+Single-container image (SPA + API + OCR on one origin, used by the cloud deploy):
+
+```bash
+docker build -t bhulekh-ai .    # root Dockerfile: builds the React app, serves it from FastAPI
+docker run -p 8000:8000 -e BHULEKH_SECRET_KEY=dev-only-key bhulekh-ai   # http://localhost:8000
+```
+
+## Deploy to the cloud (Render, one click)
+
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/rish240103034-commits/bhulekh-ai)
+
+The repo ships a [`render.yaml`](render.yaml) Blueprint that provisions a free PostgreSQL
+database plus one Docker web service. That service builds the [root `Dockerfile`](Dockerfile)
+— which compiles the React SPA and serves it, the FastAPI API, and the OCR toolchain from a
+**single origin** (so there is one public URL and no CORS). Steps:
+
+1. Click the button above (or Render dashboard → **New → Blueprint**) and connect this repo.
+2. Render reads `render.yaml`, generates the app secret, builds the image (installs
+   Tesseract + Poppler), and gives you a live URL like `https://bhulekh-ai.onrender.com`.
+3. Log in with a seeded demo account (see below) and try an upload.
+
+It deploys in **staging** mode so the demo accounts are seeded and reviewers can log in
+immediately; the security middleware (headers, rate limiting, hashed/rotated refresh
+tokens, upload hardening) is active in every environment. For a hardened production
+deployment set `BHULEKH_ENVIRONMENT=production` and `BHULEKH_SEED_DEMO_DATA=false`, then
+bootstrap the first admin with `python -m app.cli create-admin`.
+
+> Free Render instances sleep after ~15 min idle, so the first request after a lull takes
+> ~30–50 s to wake; subsequent requests are fast.
+
 ## Run the tests
 
 ```bash

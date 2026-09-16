@@ -1,0 +1,25 @@
+# Keep the build context small and free of host-only state.
+.git
+.github
+Claude outputs/
+docs/
+
+# Python
+**/__pycache__/
+**/*.pyc
+backend/.venv/
+backend/.pytest_cache/
+backend/.ruff_cache/
+
+# Host env & runtime state — must NOT enter the image.
+# backend/.env pins a Windows tessdata path that would break OCR on Linux.
+**/.env
+backend/*.db
+backend/*.sqlite3
+backend/storage/
+backend/test_storage/
+tessdata/
+
+# Node / frontend build output (rebuilt inside the image)
+frontend/node_modules/
+frontend/dist/

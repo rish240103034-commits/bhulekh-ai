@@ -76,7 +76,48 @@ def create_app() -> FastAPI:
         app.include_router(router, prefix=settings.api_v1_prefix)
 
     _register_health_routes(app)
+    _mount_frontend(app)
     return app
+
+
+def _mount_frontend(app: FastAPI) -> None:
+    """Serve a built SPA from the same origin as the API, if one is configured.
+
+    Registered last, so the API (``/api/v1/*``) and health (``/livez`` etc.) routes are
+    matched first; everything else is served from the build directory, with an
+    ``index.html`` fallback for client-side routes (so a refresh on ``/documents/123``
+    still loads the app). A no-op when ``frontend_dist`` is unset or missing, which is
+    the case in development and tests.
+    """
+    from pathlib import Path
+
+    dist = settings.frontend_dist
+    if not dist:
+        return
+    dist_path = Path(dist)
+    if not (dist_path / "index.html").exists():
+        logger.warning("frontend_dist set but no index.html found", extra={"dir": dist})
+        return
+
+    from starlette.exceptions import HTTPException as StarletteHTTPException
+    from starlette.staticfiles import StaticFiles
+
+    _api_prefixes = ("api", "health", "livez", "readyz", "docs", "redoc", "openapi")
+
+    class _SPAStaticFiles(StaticFiles):
+        async def get_response(self, path: str, scope):
+            # With html=True, StaticFiles raises a 404 for a missing file rather than
+            # returning one; catch it and serve the SPA shell so client-side routes
+            # (e.g. a refresh on /documents/123) load the app. API/doc paths keep their 404.
+            try:
+                return await super().get_response(path, scope)
+            except StarletteHTTPException as exc:
+                if exc.status_code == 404 and not path.startswith(_api_prefixes):
+                    return await super().get_response("index.html", scope)
+                raise
+
+    app.mount("/", _SPAStaticFiles(directory=str(dist_path), html=True), name="frontend")
+    logger.info("serving frontend", extra={"dir": str(dist_path)})
 
 
 # --------------------------------------------------------------------------- error handling
