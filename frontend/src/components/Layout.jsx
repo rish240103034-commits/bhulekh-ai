@@ -1,4 +1,5 @@
-import { NavLink, Outlet } from 'react-router-dom'
+import { useState } from 'react'
+import { NavLink, Outlet, useNavigate } from 'react-router-dom'
 import { currentUser, logout } from '../api/client'
 
 const NAV = [
@@ -6,9 +7,28 @@ const NAV = [
   { to: '/upload', label: 'Upload documents', roles: ['admin', 'verifier', 'operator'] },
   { to: '/documents', label: 'Documents & review', roles: ['admin', 'verifier', 'operator', 'viewer'] },
   { to: '/lookup', label: 'Parcel lookup', roles: ['admin', 'verifier', 'operator', 'viewer'] },
+  { to: '/database', label: 'Records database', roles: ['admin', 'verifier', 'operator', 'viewer'] },
+  { to: '/search', label: 'Search everything', roles: ['admin', 'verifier', 'operator', 'viewer'] },
   { to: '/audit', label: 'Audit trail', roles: ['admin', 'verifier'] },
   { to: '/users', label: 'Users & roles', roles: ['admin'] },
 ]
+
+function QuickSearch() {
+  const [q, setQ] = useState('')
+  const nav = useNavigate()
+  const go = (e) => {
+    e.preventDefault()
+    if (q.trim().length < 2) return
+    nav(`/search?q=${encodeURIComponent(q.trim())}`)
+    setQ('')
+  }
+  return (
+    <form onSubmit={go} className="sidebar-search">
+      <input type="text" value={q} onChange={(e) => setQ(e.target.value)}
+             placeholder="Search owner, khasra, village…" />
+    </form>
+  )
+}
 
 export default function Layout() {
   const user = currentUser()
@@ -16,6 +36,7 @@ export default function Layout() {
     <div className="layout">
       <aside className="sidebar">
         <div className="brand">Bhulekh-AI<small>Intelligent Land Record Digitization &amp; Validation</small></div>
+        <QuickSearch />
         <nav className="nav">
           {NAV.filter((n) => n.roles.includes(user.role)).map((n) => (
             <NavLink key={n.to} to={n.to} end={n.to === '/'}>{n.label}</NavLink>

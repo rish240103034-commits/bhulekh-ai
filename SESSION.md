@@ -156,6 +156,37 @@ Postgres); the CI job covers the SQLite migration. Pushing to GitHub is still a 
   Backend still 28/28, ruff clean. Docker image itself not built here (no local Docker);
   it builds in Render / CI. README has a "Deploy to Render" button + steps.
 
+### 2026-09-18 — frontend bundle split (THIS SESSION)
+- **Vite `manualChunks`** in [`frontend/vite.config.js`](frontend/vite.config.js) splits deps
+  into `vendor-react` (react/react-dom/react-router), `vendor-charts` (recharts), and
+  `vendor-http` (axios). **Route-level `React.lazy` + `Suspense`** in
+  [`frontend/src/main.jsx`](frontend/src/main.jsx) code-splits every page.
+- Result: the 664 kB / 194 kB-gzip monolithic bundle is gone. Vite's >500 kB warning is
+  cleared. Chunk sizes now — `vendor-charts` 411 kB (111 kB gzip), `vendor-react` 164 kB
+  (53 kB gzip), `vendor-http` 51 kB (19 kB gzip), app shell + each page 1–10 kB.
+  **Initial `/login` payload: ~77 kB gzip (down from 194 kB — ~60 % reduction)**; recharts
+  is deferred until the Dashboard route mounts.
+- Verified: `vite preview` → login rendered, no console errors, network trace confirms only
+  `vendor-react`, `vendor-http`, `Login`, `index`, and the CSS load on `/login`
+  (`vendor-charts` is absent, exactly as intended).
+
+### 2026-09-17 — SIH idea-submission slide deck
+- **Deliverable**: [`docs/Bhulekh-AI_SIH2026_PS26018_IdeaSubmission.pptx`](docs/Bhulekh-AI_SIH2026_PS26018_IdeaSubmission.pptx)
+  — 6 slides matching the official SIH 2026 idea-submission template (Title, Idea,
+  Technical Approach, Feasibility & Viability, Impact & Benefits, Research & References).
+- Content pulled from the existing documentation docx (PS 26018 · Smart Automation ·
+  Software · DoLR; Kanpur Dehat khasra 36/36-cell result, R01–R12, 28 tests, offline
+  Docker, LRMS/DILRMP/GIS). Official SIH logo + brain graphic reused from the reference
+  PDF the user supplied (extracted via `pdfimages`, colour+alpha recomposited).
+- **Built with pptxgenjs** (`scratchpad/ppt/build.js`), not the repo — a standalone
+  artifact. QA via PowerPoint COM export (no LibreOffice on this box); OOXML validation
+  passes. Notable pptxgenjs gotcha fixed: multi-run bullets need the bullet/`breakLine`
+  on each run's own options, not the `addText` call, or list items merge into one
+  paragraph / render as `[object Object]`.
+- **Open placeholders** (marked red on the title slide + `‹TEAM›` oval): Team ID and
+  Team Name (as registered on the SIH portal) — user to supply.
+- The `.pptx` is in `docs/` but was **not committed** (awaiting the team-detail fill-in).
+
 ---
 
 ## Important behaviour changes to know about
@@ -218,8 +249,8 @@ ruff check .
 4. ~~First-admin bootstrap for production~~ — **done**. `python -m app.cli create-admin`.
 5. **Push to GitHub** — still to do (not a local git repo yet). See below.
 6. **Verify the Postgres migration path on a real Postgres** (`alembic upgrade head`) — CI
-   exercises the SQLite migration only. Also consider code-splitting the frontend bundle
-   (Vite warns it is >500 kB).
+   exercises the SQLite migration only. ~~Also consider code-splitting the frontend bundle~~
+   — **done** (2026-09-18): vendor + route splits, initial payload down ~60 %.
 7. **Reseed the dev DB** if you want the new demo passwords locally: delete
    `backend/bhulekh.db` (it still has the old seed users) and restart with
    `BHULEKH_SEED_DEMO_DATA=true`.

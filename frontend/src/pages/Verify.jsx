@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import { currentUser, fetchBlobUrl, fileUrl, getDocument, reprocessDocument, verifyDocument } from '../api/client'
+import { currentUser, fetchBlobUrl, fileUrl, getDocument, getSuggestions, reprocessDocument, verifyDocument } from '../api/client'
 import { Badge, Conf } from '../components/Layout'
 
 const FIELD_ORDER = ['owner_name', 'father_or_husband_name', 'state', 'district', 'tehsil', 'village', 'survey_number',
@@ -23,6 +23,7 @@ export default function Verify() {
   const [scale, setScale] = useState(1)
   const [busy, setBusy] = useState(false)
   const [msg, setMsg] = useState(null)
+  const [suggestions, setSuggestions] = useState({})
   const imgRef = useRef()
 
   const load = async () => {
@@ -34,6 +35,15 @@ export default function Verify() {
     setParcels((data.parcels || []).map((p) => ({ ...p })))
   }
   useEffect(() => { load() }, [id])
+  // Fan the doc's jurisdiction back to the suggestion endpoint so every input
+  // input ships with a datalist of values used in the same village/district.
+  useEffect(() => {
+    if (!doc) return
+    const params = {}
+    const jurisdictionKeys = ['state', 'district', 'tehsil', 'village']
+    jurisdictionKeys.forEach((k) => { if (values[k]) params[k] = values[k] })
+    getSuggestions(params).then(({ data }) => setSuggestions(data || {})).catch(() => setSuggestions({}))
+  }, [doc, values.village, values.district, values.state, values.tehsil])
   useEffect(() => {
     if (!doc) return
     let alive = true
@@ -120,15 +130,36 @@ export default function Verify() {
 
         <div className="card">
           <h2>Extracted fields <span className="muted" style={{ fontWeight: 400 }}>— click a field to locate it on the scan</span></h2>
+          <MissingFieldsPrompt names={names} fmap={fmap} values={values} canVerify={canVerify} />
           {names.map((n) => {
             const f = fmap[n]
-            const review = f ? f.needs_review && !f.corrected_value : true
+            const filledIn = (values[n] ?? '').trim().length > 0
+            const missing = !f && !filledIn
+            const review = f ? f.needs_review && !f.corrected_value : false
+            const suggList = suggestions[n] || []
+            const listId = suggList.length ? `sugg-${n}` : undefined
             return (
-              <div key={n} className={`fieldrow ${review ? 'review' : ''}`} onClick={() => highlight(f)}>
+              <div key={n} id={`fld-${n}`}
+                   className={`fieldrow ${missing ? 'missing' : ''} ${review ? 'review' : ''}`}
+                   onClick={() => highlight(f)}>
                 <div className="name">{LABEL(n)}{f?.source === 'human' && ' ✓'}{f?.source === 'learned' && ' ⟲'}</div>
-                <input type="text" value={values[n] ?? ''} disabled={!canVerify} placeholder={f ? '' : 'not found — enter manually'}
-                  onChange={(e) => setValues({ ...values, [n]: e.target.value })} title={f?.value ? `OCR raw: ${f.value}` : ''} />
-                <div>{f ? <Conf v={f.confidence} /> : <span className="badge warning">missing</span>}</div>
+                <input type="text" value={values[n] ?? ''} disabled={!canVerify}
+                  list={listId}
+                  placeholder={f ? '' : (canVerify ? 'not found — please enter manually' : 'not found')}
+                  onChange={(e) => setValues({ ...values, [n]: e.target.value })}
+                  onClick={(e) => e.stopPropagation()}
+                  title={f?.value ? `OCR raw: ${f.value}` : (suggList.length ? `${suggList.length} suggestions from your village history` : '')} />
+                {listId && (
+                  <datalist id={listId}>
+                    {suggList.map((v) => <option key={v} value={v} />)}
+                  </datalist>
+                )}
+                <div>{f
+                  ? <Conf v={f.confidence} />
+                  : filledIn ? <span className="badge info">filled by you</span>
+                             : suggList.length > 0
+                                 ? <span className="badge info" title={`${suggList.length} suggestion(s) available`}>{suggList.length} sugg</span>
+                                 : <span className="badge warning">missing</span>}</div>
               </div>)
           })}
 
@@ -165,6 +196,50 @@ export default function Verify() {
         </div>
       )}
     </>
+  )
+}
+
+
+// Nudge the verifier toward the fields the AI could not fill. Missing fields on a
+// khasra/RoR sheet almost always block validation rule R01 (mandatory fields) and
+// therefore auto-verification, so surfacing them early — and letting one click
+// scroll straight to the first empty input — is worth the small toolbar space.
+function MissingFieldsPrompt({ names, fmap, values, canVerify }) {
+  const missing = names.filter((n) => !fmap[n] && !(values[n] ?? '').trim())
+  if (missing.length === 0) {
+    return (
+      <div className="alert ok" style={{ marginBottom: 10, fontSize: 13 }}>
+        All expected fields have a value. Review the confidence scores, then approve.
+      </div>
+    )
+  }
+  const jumpToFirst = () => {
+    const el = document.getElementById(`fld-${missing[0]}`)
+    if (!el) return
+    el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    const input = el.querySelector('input')
+    if (input) setTimeout(() => input.focus(), 250)
+  }
+  return (
+    <div className="alert warn" style={{ marginBottom: 10, fontSize: 13 }}>
+      <b>{missing.length} field{missing.length > 1 ? 's' : ''} could not be extracted</b>
+      {canVerify ? ' — please enter them manually before approving.' : ' — a verifier will need to fill these in.'}
+      <div style={{ marginTop: 6, display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+        {missing.map((n) => (
+          <a key={n} onClick={(e) => { e.preventDefault();
+              const el = document.getElementById(`fld-${n}`)
+              if (el) { el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+                       const inp = el.querySelector('input'); if (inp) setTimeout(() => inp.focus(), 250) } }}
+             href={`#fld-${n}`}
+             className="badge warning" style={{ cursor: 'pointer' }}>{LABEL(n)}</a>
+        ))}
+      </div>
+      {canVerify && (
+        <div style={{ marginTop: 8 }}>
+          <button className="btn sm" onClick={jumpToFirst}>Start filling missing fields</button>
+        </div>
+      )}
+    </div>
   )
 }
 

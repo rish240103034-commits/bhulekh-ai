@@ -15,6 +15,10 @@ button, input, select, textarea { font: inherit; }
 .brand small { display: block; font-weight: 400; font-size: 11px; opacity: 0.8; }
 .nav a { display: block; padding: 9px 12px; border-radius: 8px; color: #dbe7f5; }
 .nav a.active, .nav a:hover { background: rgba(255,255,255,0.14); color: #fff; }
+.sidebar-search { margin: 8px 0 12px; }
+.sidebar-search input { width: 100%; background: rgba(255,255,255,0.14); border: 1px solid rgba(255,255,255,0.2); color: #fff; padding: 6px 10px; border-radius: 8px; font-size: 12px; }
+.sidebar-search input::placeholder { color: rgba(255,255,255,0.6); }
+.sidebar-search input:focus { outline: none; background: rgba(255,255,255,0.22); border-color: rgba(255,255,255,0.5); }
 .sidebar .user { margin-top: auto; font-size: 12px; opacity: 0.9; border-top: 1px solid rgba(255,255,255,0.2); padding-top: 12px; }
 .sidebar .user button { margin-top: 6px; }
 main { padding: 24px 28px; max-width: 1400px; }
@@ -69,8 +73,11 @@ tr.clickable:hover { background: #f0f5fb; cursor: pointer; }
 .imgbox { position: relative; overflow: auto; max-height: 78vh; border: 1px solid var(--line); border-radius: 8px; background: #222; }
 .imgbox img { display: block; max-width: 100%; }
 .imgbox .hl { position: absolute; border: 2px solid #ffb300; background: rgba(255,179,0,0.18); pointer-events: none; }
-.fieldrow { display: grid; grid-template-columns: 170px 1fr 120px; gap: 8px; align-items: center; padding: 6px 0; border-bottom: 1px solid var(--line); }
+.fieldrow { display: grid; grid-template-columns: 170px 1fr 120px; gap: 8px; align-items: center; padding: 6px 0; border-bottom: 1px solid var(--line); scroll-margin-top: 80px; }
 .fieldrow.review input { border-color: var(--warn); background: #fffaf0; }
+.fieldrow.missing input { border-color: var(--brand-2); border-style: dashed; background: #f5faff; }
+.fieldrow.missing input::placeholder { color: var(--brand-2); font-style: italic; }
+.fieldrow.missing:focus-within input { border-style: solid; background: #fff; box-shadow: 0 0 0 2px rgba(46, 117, 182, 0.25); }
 .fieldrow .name { font-size: 12px; color: var(--muted); }
 .muted { color: var(--muted); }
 pre.ocr { white-space: pre-wrap; font-size: 12px; background: #f7f9fb; padding: 10px; border-radius: 8px; max-height: 260px; overflow: auto; }

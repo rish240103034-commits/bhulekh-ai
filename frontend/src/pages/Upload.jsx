@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import { getHealth, uploadDocuments } from '../api/client'
 
 const LANGS = [
@@ -15,6 +15,7 @@ export default function Upload() {
   const [drag, setDrag] = useState(false)
   const [progress, setProgress] = useState(0)
   const [msg, setMsg] = useState(null)
+  const [dupInfo, setDupInfo] = useState(null)
   const [health, setHealth] = useState(null)
   const nav = useNavigate()
 
@@ -28,16 +29,24 @@ export default function Upload() {
 
   const pick = (list) => setFiles([...files, ...Array.from(list)])
 
-  const submit = async () => {
+  const submit = async (allowDuplicate = false) => {
     if (!files.length) return
-    setMsg(null)
+    setMsg(null); setDupInfo(null)
     try {
-      const { data } = await uploadDocuments(files, meta, (e) => setProgress(Math.round((e.loaded / e.total) * 100)))
+      const { data } = await uploadDocuments(files, { ...meta, allow_duplicate: allowDuplicate ? 'true' : '' },
+                                               (e) => setProgress(Math.round((e.loaded / e.total) * 100)))
       setMsg({ ok: true, text: `${data.length} document(s) queued for AI processing.` })
       setFiles([])
       setTimeout(() => nav('/documents'), 1200)
     } catch (e) {
-      setMsg({ ok: false, text: e.response?.data?.detail || 'Upload failed' })
+      const payload = e.response?.data?.detail
+      // Structured duplicate response: show a link to the existing document.
+      if (e.response?.status === 409 && payload && typeof payload === 'object'
+          && payload.code === 'duplicate_upload') {
+        setDupInfo(payload)
+      } else {
+        setMsg({ ok: false, text: (typeof payload === 'string' ? payload : payload?.detail) || 'Upload failed' })
+      }
     } finally { setProgress(0) }
   }
 
@@ -61,7 +70,17 @@ export default function Upload() {
           )}
           {progress > 0 && <div className="progress" style={{ marginTop: 10 }}><i style={{ width: `${progress}%` }} /></div>}
           {msg && <div className={`alert ${msg.ok ? 'ok' : 'err'}`} style={{ marginTop: 10 }}>{msg.text}</div>}
-          <button className="btn" style={{ marginTop: 12 }} disabled={!files.length} onClick={submit}>Upload &amp; process {files.length ? `(${files.length})` : ''}</button>
+          {dupInfo && (
+            <div className="alert warn" style={{ marginTop: 10 }}>
+              <b>Duplicate detected.</b> {dupInfo.detail}
+              <div style={{ marginTop: 6, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                <Link className="btn sm ghost" to={`/documents/${dupInfo.existing_document_id}`}>Open existing document</Link>
+                <button className="btn sm" onClick={() => submit(true)}>Upload anyway (allow duplicate)</button>
+                <button className="btn sm ghost" onClick={() => setDupInfo(null)}>Cancel</button>
+              </div>
+            </div>
+          )}
+          <button className="btn" style={{ marginTop: 12 }} disabled={!files.length} onClick={() => submit(false)}>Upload &amp; process {files.length ? `(${files.length})` : ''}</button>
         </div>
         <div className="card">
           <h2>Document metadata</h2>
