@@ -3,6 +3,23 @@ from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
 from app.core.config import settings
 
+
+def _resolve_database_url(url: str) -> str:
+    """Pin the PostgreSQL driver to psycopg2, which is what we install.
+
+    SQLAlchemy 2.x defaults `postgresql://` to the psycopg (v3) DBAPI, which is
+    not in our requirements. Render's managed connection string is a bare
+    `postgresql://…` URL, so rewrite it to `postgresql+psycopg2://` unless the
+    caller already picked a driver explicitly.
+    """
+    if url.startswith("postgres://"):                  # Heroku-style alias
+        url = "postgresql://" + url[len("postgres://"):]
+    if url.startswith("postgresql://"):
+        url = "postgresql+psycopg2://" + url[len("postgresql://"):]
+    return url
+
+
+settings.database_url = _resolve_database_url(settings.database_url)
 _is_sqlite = settings.database_url.startswith("sqlite")
 
 # SQLite ignores pool sizing; PostgreSQL gets a bounded, recycled pool so a long-running
