@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 
@@ -51,7 +51,8 @@ def _issue_tokens(db: Session, user: User, request: Request) -> Token:
 
 @router.post("/login", response_model=Token)
 @limit(settings.rate_limit_login)
-def login(request: Request, form: OAuth2PasswordRequestForm = Depends(),
+def login(request: Request, response: Response,
+          form: OAuth2PasswordRequestForm = Depends(),
           db: Session = Depends(get_db)):
     user = db.query(User).filter(User.username == form.username).first()
     # Constant-time verify runs even when the user is unknown, so login timing does not
@@ -67,7 +68,8 @@ def login(request: Request, form: OAuth2PasswordRequestForm = Depends(),
 
 @router.post("/refresh", response_model=Token)
 @limit(settings.rate_limit_login)
-def refresh(request: Request, body: RefreshIn, db: Session = Depends(get_db)):
+def refresh(request: Request, response: Response, body: RefreshIn,
+            db: Session = Depends(get_db)):
     """Exchange a valid, unrevoked refresh token for a new token pair (rotation).
 
     The presented token is verified, looked up by hash, checked for revocation and

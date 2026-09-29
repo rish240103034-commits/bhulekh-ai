@@ -21,7 +21,8 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.models.entities import DocStatus, Document, ExtractedField, LandParcel, LandRecord
-from app.pipeline.extract import Extracted, ExtractionOutput, extract_fields
+from app.pipeline.document import apply_rotation, detect_rotation, looks_like_document, rectify
+from app.pipeline.extract import Extracted, ExtractionOutput, extract_fields, find_khasra_rows
 from app.pipeline.learning import CorrectionLexicon, field_reliability
 from app.pipeline.normalize import normalize_field, parse_area
 from app.pipeline.ocr import missing_languages, resolve_languages, run_ocr
@@ -57,6 +58,33 @@ def _merge_fields(primary: ExtractionOutput, secondary: ExtractionOutput) -> dic
             if f.field_name not in merged or _merge_score(merged[f.field_name]) < _merge_score(f):
                 merged[f.field_name] = f
     return merged
+
+
+def _language_orderings(language: str) -> list[str]:
+    """Return the language strings to run OCR with, reversed second-first when applicable.
+
+    Tesseract's Devanagari output depends on which pack is primary in the lang string:
+    "eng+hin" biases tie-breaks toward Latin and misreads handwritten `ग्राम` as `MA`;
+    "hin+eng" reads it correctly. Running both catches labels that only one ordering sees.
+    """
+    parts = [p for p in language.replace(",", "+").split("+") if p]
+    if len(parts) <= 1:
+        return [language]
+    reversed_ = "+".join(reversed(parts))
+    return [language, reversed_]
+
+
+def _merge_extractions(outs: list[ExtractionOutput]) -> ExtractionOutput:
+    """Take best-per-field across multiple extraction passes (same page, different OCR)."""
+    merged: dict[str, Extracted] = {}
+    doc_type = "unknown"
+    for o in outs:
+        if o.doc_type != "unknown" and doc_type == "unknown":
+            doc_type = o.doc_type
+        for f in o.fields:
+            if f.field_name not in merged or _merge_score(merged[f.field_name]) < _merge_score(f):
+                merged[f.field_name] = f
+    return ExtractionOutput(fields=list(merged.values()), doc_type=doc_type)
 
 
 def _outside_band(fields: list[Extracted], band: tuple[int, int] | None) -> list[Extracted]:
@@ -105,6 +133,31 @@ def process_document(db: Session, doc: Document) -> Document:
                 f"(e.g. hin.traineddata into Tesseract's tessdata folder) and re-run.")
 
         for pno, img in enumerate(pages, start=1):
+            # Guard against wrong uploads (blank photo, selfie, floor picture).
+            # Failing fast here beats a 20-second OCR pass returning nothing.
+            ok, reason = looks_like_document(img)
+            if not ok:
+                diagnostics["pages"].append({
+                    "page": pno, "quality": 0.0, "skew": 0.0,
+                    "page_ocr_confidence": 0.0, "table_rows": 0,
+                    "table_columns": [], "table_note": None,
+                    "table_headers_read": None,
+                    "content_check": {"is_document": False, "reason": reason},
+                })
+                continue
+
+            # Sideways phone photos are common: someone shoots landscape while
+            # the document itself is portrait, or an ID card upside-down. Try
+            # each 90° orientation and keep the one that reads best.
+            angle, rot_conf = detect_rotation(img)
+            if angle != 0:
+                img = apply_rotation(img, angle)
+
+            # If this is a phone photo of a document on a background, warp it to an
+            # orthogonal rectangle first — otherwise Tesseract OCRs the background too
+            # and the ruled-table detector never sees straight column lines.
+            img, warp = rectify(img)
+
             pre = preprocess(img)
             qualities.append(pre["quality"])
             out_path = Path(settings.processed_dir) / f"{doc.id}_p{pno}.png"
@@ -122,6 +175,9 @@ def process_document(db: Session, doc: Document) -> Document:
                 "table_columns": sorted(set(table.columns.values())) if table.columns else [],
                 "table_note": table.reason,
                 "table_headers_read": table.header_texts or None,
+                "document_rectify": warp.as_dict(),
+                "auto_rotation": {"angle": angle, "mean_conf": round(rot_conf, 1)} if angle else None,
+                "content_check": {"is_document": True, "reason": ""},
             })
             band = None
             if table.rows and table.bbox:
@@ -129,10 +185,29 @@ def process_document(db: Session, doc: Document) -> Document:
                 for row in table.rows:
                     parcels.append((pno, dict(row.values), dict(row.confidences), row.bbox,
                                     table.area_unit_hint))
+            elif len(pages) == 1:
+                # Table detector missed the ruled grid — a common outcome on phone
+                # photos where wooden noise, faded rules and residual perspective all
+                # fight the morphology filter. Recover khasra numbers from row-start
+                # patterns in the OCR text so a multi-parcel document still fans out
+                # into its individual rows in the records showcase.
+                khasras = find_khasra_rows(page_ocr.text)
+                if len(khasras) >= 2:
+                    diagnostics["pages"][-1]["synthesized_parcels"] = len(khasras)
+                    for k in khasras:
+                        parcels.append((pno, {"parcel_number": k}, {"parcel_number": 65.0},
+                                        None, None))
 
-            region_ocr = read_regions(pre, doc.language, band)
-            region_ext = extract_fields(region_ocr, page=pno)
-            refine_numeric_fields(pre, region_ext.fields)
+            # Region OCR is run for each language ordering: Tesseract's Devanagari
+            # readings differ when eng or hin is primary, and label extraction on
+            # handwritten Hindi picks up different fields per ordering. Merge both.
+            region_exts: list[ExtractionOutput] = []
+            for order in _language_orderings(doc.language):
+                r = read_regions(pre, order, band)
+                r_ext = extract_fields(r, page=pno)
+                refine_numeric_fields(pre, r_ext.fields)
+                region_exts.append(r_ext)
+            region_ext = _merge_extractions(region_exts)
             page_ext = extract_fields(page_ocr, page=pno)
             page_ext.fields = _outside_band(page_ext.fields, band)
 

@@ -2,7 +2,7 @@ import hashlib
 from datetime import UTC, datetime
 from pathlib import Path
 
-from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Query, Request, Response, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
@@ -59,11 +59,11 @@ def _scope(q, user: User):
 
 @router.post("/upload", response_model=list[DocumentOut], status_code=201)
 @limit(settings.rate_limit_upload)
-async def upload(background: BackgroundTasks, request: Request,
+async def upload(background: BackgroundTasks, request: Request, response: Response,
                  files: list[UploadFile] = File(...),
                  language: str = Form("eng+hin"), state: str | None = Form(None),
                  district: str | None = Form(None), doc_type: str = Form("unknown"),
-                 sync: bool = Form(False),
+                 sync: bool = Form(False), allow_duplicate: bool = Form(False),
                  db: Session = Depends(get_db), user: User = Depends(require_roles("operator"))):
     if len(files) > MAX_FILES_PER_UPLOAD:
         raise HTTPException(413, f"At most {MAX_FILES_PER_UPLOAD} files per upload")
@@ -80,6 +80,21 @@ async def upload(background: BackgroundTasks, request: Request,
             raise HTTPException(400, f"{_safe_filename(f.filename)} is empty")
         sha = hashlib.sha256(data).hexdigest()
         safe_name = _safe_filename(f.filename)
+        # Byte-identical duplicate check: the same scan uploaded a second time is
+        # almost always a mistake. Surface the existing doc's id so the frontend
+        # can offer "open the existing document instead". Skip when the caller
+        # explicitly asked (`allow_duplicate=true`) — useful for evaluation
+        # datasets or when a downstream validation rule is what we're testing.
+        if not allow_duplicate:
+            existing = db.query(Document).filter(Document.sha256 == sha).first()
+            if existing:
+                raise HTTPException(409, {
+                    "code": "duplicate_upload",
+                    "detail": f"'{safe_name}' has already been uploaded on "
+                              f"{existing.created_at.strftime('%Y-%m-%d %H:%M')}.",
+                    "existing_document_id": existing.id,
+                    "existing_status": existing.status.value,
+                })
         doc = Document(original_filename=safe_name, stored_path="", mime_type=f.content_type,
                        sha256=sha, language=language, state=state or user.state,
                        district=district or user.district, doc_type=doc_type, uploaded_by=user.id)
@@ -101,6 +116,94 @@ async def upload(background: BackgroundTasks, request: Request,
             background.add_task(_process_in_background, doc.id)
         created.append(doc)
     return created
+
+
+@router.get("/search")
+def global_search(q: str, limit: int = Query(30, le=200),
+                  db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """One search box across everything the system holds.
+
+    Given a query, look for it in:
+      * `LandRecord` fields (owner, village, khasra, khata, survey, tehsil, district),
+      * per-document extracted fields (`ExtractedField.value`),
+      * the raw OCR text (`Document.ocr_text`),
+      * parcel rows (`LandParcel.parcel_number`, owner, crop, land_classification).
+
+    Returns a homogenous list of {kind, doc_id, snippet, extra} so the UI can render
+    one results table regardless of which layer produced the hit.
+    """
+    from sqlalchemy import or_
+    from app.models.entities import ExtractedField, LandParcel, LandRecord
+
+    like = f"%{q.strip()}%"
+    if len(q.strip()) < 2:
+        raise HTTPException(400, "Search query needs at least 2 characters")
+
+    hits: list[dict] = []
+    seen: set[str] = set()   # per-document dedupe so one doc doesn't spam the list
+
+    def add(doc_id: str, kind: str, snippet: str, extra: dict | None = None) -> None:
+        key = f"{doc_id}:{kind}"
+        if doc_id in seen and kind != "ocr":
+            return
+        seen.add(doc_id)
+        hits.append({"document_id": doc_id, "kind": kind,
+                     "snippet": snippet[:180], "extra": extra or {}})
+
+    # Records (owner / village / khasra / khata etc)
+    rec_query = _scope(db.query(Document).join(LandRecord, LandRecord.document_id == Document.id), user)
+    rec_hits = (rec_query.filter(or_(
+        LandRecord.owner_name.ilike(like), LandRecord.father_or_husband_name.ilike(like),
+        LandRecord.village.ilike(like), LandRecord.district.ilike(like),
+        LandRecord.tehsil.ilike(like), LandRecord.state.ilike(like),
+        LandRecord.khasra_number.ilike(like), LandRecord.khata_number.ilike(like),
+        LandRecord.survey_number.ilike(like),
+    )).limit(limit).all())
+    for d in rec_hits:
+        r = d.record
+        add(d.id, "record",
+            f"{r.village or '—'} · {r.owner_name or '—'} · khasra {r.khasra_number or '—'}",
+            {"filename": d.original_filename, "status": d.status.value})
+
+    # Parcels
+    p_query = _scope(db.query(Document).join(LandParcel, LandParcel.document_id == Document.id), user)
+    p_hits = (p_query.filter(or_(
+        LandParcel.owner_name.ilike(like), LandParcel.parcel_number.ilike(like),
+        LandParcel.crop.ilike(like), LandParcel.land_classification.ilike(like),
+    )).limit(limit).all())
+    for d in p_hits:
+        for p in d.parcels:
+            if any((p.owner_name or "").lower().find(q.lower()) >= 0
+                   or (p.parcel_number or "").lower().find(q.lower()) >= 0
+                   or (p.crop or "").lower().find(q.lower()) >= 0
+                   for _ in [1]):
+                add(d.id, "parcel",
+                    f"parcel {p.parcel_number or '—'} · owner {p.owner_name or '—'} · {p.crop or ''}".strip(),
+                    {"filename": d.original_filename, "parcel_row": p.row_index})
+                break
+
+    # Extracted fields
+    ef_query = _scope(db.query(Document).join(ExtractedField, ExtractedField.document_id == Document.id), user)
+    ef_hits = ef_query.filter(ExtractedField.value.ilike(like)).limit(limit).all()
+    for d in ef_hits:
+        matching = next((f for f in d.fields if f.value and q.lower() in f.value.lower()), None)
+        if matching:
+            add(d.id, "field",
+                f"{matching.field_name} = {matching.value}",
+                {"filename": d.original_filename})
+
+    # Raw OCR text — coarse contains match. Windowed snippet.
+    ocr_query = _scope(db.query(Document), user)
+    ocr_hits = ocr_query.filter(Document.ocr_text.ilike(like)).limit(limit).all()
+    for d in ocr_hits:
+        idx = d.ocr_text.lower().find(q.lower()) if d.ocr_text else -1
+        if idx < 0:
+            continue
+        start = max(0, idx - 60); end = min(len(d.ocr_text), idx + len(q) + 60)
+        add(d.id, "ocr", f"…{d.ocr_text[start:end].strip()}…",
+            {"filename": d.original_filename})
+
+    return {"query": q, "hits": hits[:limit], "total": len(hits)}
 
 
 @router.get("", response_model=DocumentPage)

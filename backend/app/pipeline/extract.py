@@ -73,6 +73,21 @@ VALIDATORS: dict[str, re.Pattern] = {
     "registration_date": re.compile(r"^[0-9०-९]{1,2}[-/.][0-9०-९]{1,2}[-/.][0-9०-९]{2,4}$"),
 }
 
+# Devanagari label phrases that on this class of form act as column headers or
+# section starts. If they appear INSIDE a value string, that value has bled into the
+# next label region and should be truncated at their leading character.
+_EMBEDDED_LABEL_KEYWORDS = (
+    "फ़सल का विवरण", "फसल का विवरण",           # crop details column
+    "भूमि स्वामी का नाम", "भूस्वामी का नाम",   # landowner column
+    "कृषक का नाम",                             # cultivator column
+    "क्षेत्रफल", "बीघा-बिस्वा",                 # area column
+    "खसरा नं", "खसरा संख्या", "खसरा क्रमांक",
+    "खाता नं", "खाता संख्या",
+    "तहसील", "जिला", "ग्राम", "पट्टा", "परगना",
+    "वर्ष", "विवरण",
+    "रबी", "खरीफ", "खररीप",
+)
+
 TITLE_NOISE = [
     "उत्तर प्रदेश शासन", "मध्य प्रदेश शासन", "राजस्थान सरकार", "महाराष्ट्र शासन", "बिहार सरकार",
     "हरियाणा सरकार", "पंजाब सरकार", "भारत सरकार", "राजस्व विभाग", "भूमि अभिलेख", "अधिकार अभिलेख",
@@ -86,7 +101,10 @@ LAND_CLASSES = ["agricultural", "irrigated", "unirrigated", "residential", "comm
 OWNERSHIP_TYPES = ["individual", "joint", "trust", "company", "bhumidhar", "sirdar", "asami",
                    "एकल", "संयुक्त", "सरकारी", "भूमिधर", "सीरदार", "आसामी"]
 
-SEP = re.compile(r"\s*[:|]\s*|\s+[-–—=]+\s*|\s{3,}")
+SEP = re.compile(r"\s*[:;|：ः]\s*|\s+[-–—=]+\s*|\s{3,}")
+# Devanagari visarga (ः, ः) is visually a colon; OCR outputs it in place of ':'
+# in Hindi label:value pairs like "जिलाः मेरठ". Semicolon and full-width colon (：)
+# similarly get emitted for the same character on this input.
 MAX_KEY_WORDS = 4
 DEVANAGARI_DIGITS = str.maketrans("०१२३४५६७८९", "0123456789")
 _DEVANAGARI_RE = re.compile(r"[\u0900-\u097F]")
@@ -126,11 +144,26 @@ _KEY_STRINGS = [k for k, _ in _KEY_LIST]
 
 
 def _match_key(candidate: str) -> tuple[str | None, float]:
-    """Return (field_name, score 0-100) for a noisy OCR key fragment (whole string)."""
+    """Return (field_name, score 0-100) for a noisy OCR key fragment (whole string).
+
+    Very short OCR fragments like "TA Te" trivially match short English keys such as
+    "state" or "name" at exactly the fuzzy-cutoff score. Filter those before the
+    match: a real label either contains a Devanagari letter or is a proper Latin
+    word with at least one vowel and no lone-uppercase soup.
+    """
     c = candidate.strip().lower().strip(".:()")
     if not c or len(c) < 2:
         return None, 0.0
-    best = process.extractOne(c, _KEY_STRINGS, scorer=fuzz.ratio, score_cutoff=80)
+    # Reject Latin-only fragments that don't look like a real English word: fewer
+    # than 3 letters, no vowel, or a punctuation-dense burst. These are the classic
+    # "TA Te / mate / P§" fragments Tesseract emits for handwritten Devanagari.
+    if _DEVANAGARI_RE.search(c) is None:
+        letters = [ch for ch in c if ch.isalpha()]
+        if len(letters) < 4:
+            return None, 0.0
+        if not any(v in c for v in "aeiou"):
+            return None, 0.0
+    best = process.extractOne(c, _KEY_STRINGS, scorer=fuzz.ratio, score_cutoff=85)
     if not best:
         return None, 0.0
     key, score, idx = best
@@ -156,6 +189,11 @@ def _trim_value(value: str, field_name: str | None = None) -> str:
     "जिला - कानपुर देहात   उत्तर प्रदेश शासन   वर्ष - 1987-88". Splitting on the
     separators leaves the document title sitting inside the district's value; the
     title is not data, so the value ends where such a phrase begins.
+
+    Tabular forms have a second problem: the label-value line runs into a column
+    header on the same OCR line (e.g. "ग्राम: सलेमपुर, फ़सल का विवरण"). Any known
+    label keyword embedded inside a value has to be treated as the start of a new
+    field, not part of the current one.
     """
     v = value.strip()
     low = v.lower()
@@ -164,9 +202,24 @@ def _trim_value(value: str, field_name: str | None = None) -> str:
         idx = low.find(phrase.lower())
         if idx > 0:
             cut = min(cut, idx)
+    # Truncate at any embedded label keyword: the current value ends before the next
+    # label begins. Keyword must sit at a word boundary and not be at position 0
+    # (otherwise the whole value is a label; the extractor already handled that).
+    for keyword in _EMBEDDED_LABEL_KEYWORDS:
+        idx = v.find(keyword)
+        while 0 < idx < cut:
+            before = v[idx - 1] if idx > 0 else " "
+            if not before.isalnum() and before not in "ऀँंः":
+                cut = idx
+                break
+            idx = v.find(keyword, idx + 1)
     v = v[:cut]
     v = re.sub(r"[_.\-–—~`'\"]{2,}", " ", v)          # dotted rules and fill-in underscores
-    v = re.sub(r"\s{2,}", " ", v).strip(" .,;:_-–—|\"'()")
+    # Cut a trailing asterisk / curly-quote / stray star that Tesseract emits
+    # for signature seals or margin marks. Do this before the outer strip so any
+    # dangling punctuation from the tail is fully removed.
+    v = re.sub(r"\s+[*×★•·`'\"“”‘’]+.*$", "", v)
+    v = re.sub(r"\s{2,}", " ", v).strip(" .,;:_-–—|\"'()*×★•·“”‘’`")
 
     # A value written in Devanagari picks up stray Latin tokens from OCR noise; drop them.
     if _DEVANAGARI_RE.search(v):
@@ -251,6 +304,233 @@ def detect_doc_type(text: str) -> str:
     return "unknown"
 
 
+# ---- Structural patterns common to Indian land-revenue registers ----
+# A single Devanagari "word" (letter cluster), used to build a 1-to-N word name.
+_DEV_WORD = r"[ऀ-ॿ]+"
+# Words that would immediately end a person name: the relationship markers, role
+# suffixes, common column headers. When any of these follow, the person name is over.
+_NAME_STOP_WORDS = (
+    "आत्मज|आत्मज़|वलद|पुत्र|पिता|मालिक|स्वामी|काश्तकार|कब्जेदार|कब्ज़ेदार|"
+    "भूमि|भूस्वामी|कृषक|खातेदार|फ़सल|फसल|खसरा|खाता|क्षेत्रफल"
+)
+# Owner name: 1 to 4 Devanagari words, but no subsequent word may itself be a
+# stop word. Prevents "राम लाल आत्मज..." from swallowing the आत्मज marker.
+_DEV_OWNER_NAME = rf"{_DEV_WORD}(?:\s+(?!(?:{_NAME_STOP_WORDS})\b){_DEV_WORD}){{0,3}}"
+# Father name: 1 or 2 Devanagari words — a standard Indian patronymic ("हरि सिंह",
+# "गोपाल राम"). Bounded at 2 so the greedy quantifier can't gobble the NEXT owner
+# name on a multi-parcel row where "आत्मज X Y आत्मज..." repeats.
+_DEV_FATHER_NAME = rf"{_DEV_WORD}(?:\s+(?!(?:{_NAME_STOP_WORDS})\b){_DEV_WORD}){{0,1}}"
+
+# Role suffix — name preceded by, or followed by, "- मालिक" / "- स्वामी" / "- काश्तकार".
+_ROLE_OWNER_RE = re.compile(
+    rf"({_DEV_OWNER_NAME})\s*[-–—:]\s*(?:मालिक|स्वामी|malik|swami)\b",
+    re.IGNORECASE,
+)
+_ROLE_CULTIVATOR_RE = re.compile(
+    rf"({_DEV_OWNER_NAME})\s*[-–—:]\s*(?:काश्तकार|कब्जेदार|कब्ज़ेदार|kashtkar|kabjedar)\b",
+    re.IGNORECASE,
+)
+# आत्मज / वलद / पुत्र ("son of") sit BETWEEN a person and their father on Hindi
+# revenue forms. The father name is bounded so it can't gobble the next owner's
+# name — which on a multi-parcel sheet immediately follows the first father.
+_FATHER_MARKER_RE = re.compile(
+    rf"({_DEV_OWNER_NAME})\s+(?:आत्मज|आत्मज़|वलद|पुत्र|पिता\s*पुत्र)\s+({_DEV_FATHER_NAME})",
+)
+# Bigha-biswa area, in Devanagari or ASCII digits, either fully separated or bare.
+_BIGHA_BISWA_RE = re.compile(
+    r"([0-9०-९]+)\s*बीघा\s*([0-9०-९]+)?\s*(?:बिस्वा|बिस्वे)?",
+)
+# A parcel row on a khasra girdawari sheet has a khasra number immediately
+# followed by the bigha-biswa area — that adjacency is more reliable than trying
+# to anchor on the year at the start of a noise-heavy OCR line. Used only when
+# the table detector could not recognise the ruled grid.
+_KHASRA_ROW_RE = re.compile(
+    r"(?<![०-९0-9])"                                    # not preceded by another digit
+    r"([०-९]{2,4})"                                     # capture: khasra (Devanagari)
+    r"(?![०-९0-9])"                                     # not followed by another digit
+    r"[^०-९0-9\n]{1,10}?"                               # window with NO other digits — pins to
+                                                        # the khasra nearest बीघा, so on a row
+                                                        # like "२०५५ १०४ 3 बीघा" only १०४ matches
+    r"बीघा"                                             # followed by a bigha area
+)
+# Straight state mentions on Haryana / UP / MP e-record portals (title bar text).
+_STATE_MENTIONS = {
+    "HARYANA": "Haryana", "हरियाणा": "हरियाणा",
+    "UTTAR PRADESH": "Uttar Pradesh", "उत्तर प्रदेश": "उत्तर प्रदेश",
+    "MADHYA PRADESH": "Madhya Pradesh", "मध्य प्रदेश": "मध्य प्रदेश",
+    "RAJASTHAN": "Rajasthan", "राजस्थान": "राजस्थान",
+    "MAHARASHTRA": "Maharashtra", "महाराष्ट्र": "महाराष्ट्र",
+    "BIHAR": "Bihar", "बिहार": "बिहार",
+    "PUNJAB": "Punjab", "पंजाब": "पंजाब",
+    "GUJARAT": "Gujarat", "गुजरात": "गुजरात",
+}
+
+
+def find_khasra_rows(text: str) -> list[str]:
+    """Recover khasra numbers from a multi-parcel sheet the table detector missed.
+
+    Each parcel row of a khasra girdawari has the khasra number a short distance
+    before the bigha area cell. The list returned here is ASCII-digit form, in OCR
+    order, de-duplicated while preserving order. 4-digit numbers in the year range
+    (18xx–21xx) are dropped: they are years, not khasra numbers.
+    """
+    seen: list[str] = []
+    for m in _KHASRA_ROW_RE.finditer(text):
+        raw = m.group(1)
+        ascii_digits = raw.translate(DEVANAGARI_DIGITS)
+        if not (2 <= len(ascii_digits) <= 5):
+            continue
+        # Drop year-shaped numbers so a row line like "२०५५ १०४ ३ बीघा" (where the
+        # regex's window doesn't reach across, but similar variants do) never
+        # elevates the year into a khasra.
+        try:
+            n = int(ascii_digits)
+            if 1800 <= n <= 2100:
+                continue
+        except ValueError:
+            continue
+        if ascii_digits in seen:
+            continue
+        seen.append(ascii_digits)
+    return seen
+
+
+def _looks_like_person_name(name: str) -> bool:
+    """Filter names that are almost certainly not a person.
+
+    A land-classification token (पड़त, चरागाह, बंजर, आबादी…) that happens to sit
+    above "मालिक" or "काश्तकार" in a column strip would otherwise steal the
+    owner/cultivator field. The heuristic here is intentionally simple: reject
+    if the value matches any known land-classification/crop vocabulary token, and
+    require at least one Devanagari "word" of length ≥ 2. Real person names are
+    almost always multi-word; single-word names are still allowed but only if
+    they aren't in the closed vocabulary.
+    """
+    from app.pipeline.table import VOCABULARIES
+
+    stripped = name.strip()
+    if not stripped:
+        return False
+    if any(ch.isdigit() for ch in stripped):
+        return False
+    lower = stripped.lower()
+    for vocab_terms in VOCABULARIES.values():
+        for term in vocab_terms:
+            if term == stripped or term.lower() == lower:
+                return False
+    # An OCR fragment like "9२०२६ कई त" — mostly punctuation or single-glyph tokens.
+    tokens = [t for t in re.split(r"\s+", stripped) if len(t) >= 2]
+    if not tokens:
+        return False
+    return True
+
+
+def _apply_structural_patterns(text: str, seen: dict[str, "Extracted"], page: int) -> None:
+    """Extract fields from structural patterns that don't fit the label:value model.
+
+    These are the conventions land-revenue registers use where the label sits AFTER
+    the value ("<name> - मालिक"), or where the separator is a relation word rather
+    than a colon ("<name> आत्मज <father>"). The plain SEP-based extractor cannot see
+    these because it splits on colon and looks for the label on the left.
+    """
+    # Owner name from role suffix — "<Name> - मालिक" / "<Name> - स्वामी"
+    if "owner_name" not in seen:
+        for m in _ROLE_OWNER_RE.finditer(text):
+            name = re.sub(r"\s+", " ", m.group(1)).strip(" ,।-–—")
+            if name and len(name) >= 3 and _looks_like_person_name(name):
+                seen["owner_name"] = Extracted("owner_name", name, 78.0, "pattern-role",
+                                                page, evidence=m.group(0))
+                break
+
+    # Possessor / cultivator — "<Name> - काश्तकार"
+    if "possessor_name" not in seen:
+        for m in _ROLE_CULTIVATOR_RE.finditer(text):
+            name = re.sub(r"\s+", " ", m.group(1)).strip(" ,।-–—")
+            if name and len(name) >= 3 and _looks_like_person_name(name):
+                seen["possessor_name"] = Extracted("possessor_name", name, 76.0,
+                                                    "pattern-role", page,
+                                                    evidence=m.group(0))
+                break
+
+    # Father's name from the आत्मज / वलद / पुत्र separator — this is a strong signal
+    # on its own (the marker specifically means "son of X"). Iterate matches so we
+    # skip the ones whose father group captured a crop name (गेंहू, धान), a unit
+    # (बिस्वा), or was otherwise not a person. Owner is filled from the token
+    # before आत्मज, again with the same validity check.
+    for m in _FATHER_MARKER_RE.finditer(text):
+        candidate_owner = re.sub(r"\s+", " ", m.group(1)).strip(" ,।-–—")
+        # Strip the area cell that spilled into the owner cell. The row usually
+        # starts "<khasra> <area> <owner> आत्मज <father>", and after preprocess
+        # the space between the area and the owner is sometimes lost. So drop any
+        # leading digits and then any leading unit words (बीघा, बिस्वा, hectare
+        # etc.) so a real person name is left.
+        candidate_owner = re.split(r"[०-९0-9]+", candidate_owner)[-1].strip()
+        # Repeatedly strip a leading unit word — the row is "<khasra> <n> <unit>
+        # <owner>", and Tesseract may drop the whitespace after the unit so the
+        # regex capture starts with "बिस्वा". Python's \b is Latin-only, so use
+        # an explicit whitespace terminator.
+        while True:
+            trimmed = re.sub(
+                r"^(?:बीघा|बिस्वा|बिंस्वा|बिंस्वे|हेक्टेयर|हे|एकड़|एकड|गुंठा|ha|hectare|acre)"
+                r"(?:\s+|$)", "", candidate_owner)
+            if trimmed == candidate_owner:
+                break
+            candidate_owner = trimmed.strip()
+        father = re.sub(r"\s+", " ", m.group(2)).strip(" ,।-–—")
+        father = re.split(r"[|/,;।]", father)[0].strip()
+        owner_ok = (candidate_owner and len(candidate_owner) >= 3
+                    and _looks_like_person_name(candidate_owner))
+        father_ok = (father and len(father) >= 3
+                     and _looks_like_person_name(father))
+        if not (owner_ok and father_ok):
+            continue
+        if "owner_name" not in seen:
+            # First valid pair is the reliable one; a longer capture later in the
+            # OCR text is usually just noise the greedy matcher hasn't finished
+            # trimming. Cross-pass merging happens in the runner's `_merge_score`.
+            seen["owner_name"] = Extracted("owner_name", candidate_owner, 82.0,
+                                            "pattern-relation", page,
+                                            evidence=m.group(0))
+        if "father_or_husband_name" not in seen:
+            seen["father_or_husband_name"] = Extracted(
+                "father_or_husband_name", father, 78.0, "pattern-relation",
+                page, evidence=m.group(0))
+        # First fully-valid pair is enough — later matches only produce noisier
+        # variants (owner "5 बिस्वा राम लाल", father "हरि गेंहू").
+        break
+
+    # Plot area — bigha-biswa is the compound unit used across UP/Haryana/Bihar
+    if "plot_area" not in seen:
+        m = _BIGHA_BISWA_RE.search(text)
+        if m:
+            bigha = m.group(1)
+            biswa = m.group(2)
+            value = f"{bigha} बीघा" + (f" {biswa} बिस्वा" if biswa else "")
+            seen["plot_area"] = Extracted("plot_area", value, 72.0, "pattern-area",
+                                          page, evidence=m.group(0))
+
+    # Khasra number(s) — pull them from row-start patterns when the table detector
+    # missed the grid. On a single-row match, use it directly; on many rows, expose
+    # the range plus the full list in the value so the reviewer can see all khasras.
+    if "khasra_number" not in seen:
+        rows = find_khasra_rows(text)
+        if rows:
+            value = rows[0] if len(rows) == 1 else f"{rows[0]}-{rows[-1]}"
+            seen["khasra_number"] = Extracted(
+                "khasra_number", value, 74.0, "pattern-rowlist", page,
+                evidence=f"{len(rows)} row(s): {', '.join(rows)}",
+            )
+
+    # State — pattern-mentioned in the title bar of the record portal
+    if "state" not in seen:
+        upper = text.upper()
+        for token, canonical in _STATE_MENTIONS.items():
+            if token in upper or token in text:
+                seen["state"] = Extracted("state", canonical, 90.0, "pattern-title",
+                                          page, evidence=token)
+                break
+
+
 def extract_fields(ocr: OCRResult, page: int = 1) -> ExtractionOutput:
     out = ExtractionOutput(doc_type=detect_doc_type(ocr.text))
     lines = ocr.text.split("\n")
@@ -290,7 +570,7 @@ def extract_fields(ocr: OCRResult, page: int = 1) -> ExtractionOutput:
 
         for fname, kscore, raw_val in pairs:
             val = _trim_value(raw_val, fname)
-            if not val:
+            if not val or _is_gibberish_for(fname, val):
                 continue
             conf = _score(fname, val, kscore, _line_conf(ocr.tokens, li))
             cand = Extracted(fname, val, conf, "rule", page, li, _line_bbox(ocr.tokens, li),
@@ -309,8 +589,44 @@ def extract_fields(ocr: OCRResult, page: int = 1) -> ExtractionOutput:
         if v:
             seen["ownership_type"] = Extracted("ownership_type", v, 60.0, "ml", page, evidence="vocab")
 
+    # Structural patterns run last so a stronger label:value reading is never overridden
+    # by a heuristic pattern match. See `_apply_structural_patterns`.
+    _apply_structural_patterns(ocr.text, seen, page)
+
     out.fields = list(seen.values())
     return out
+
+
+# Fields whose value is a proper noun (place or person). On an Indian Devanagari form
+# these are always in a Devanagari script; a Latin-only value here is almost always
+# Tesseract misreading handwriting, not real data.
+_NAME_FIELDS = {"village", "tehsil", "district", "state", "owner_name",
+                "father_or_husband_name", "pargana"}
+# A plausible Latin place/person name token: either a Title-Case word (`Meerut`,
+# `Ram`) or a lowercase one (`meerut`) of at least 3 letters. All-caps 3-4 letter
+# tokens like `TAX`, `TOIT` are Tesseract falling back to Latin gibberish for
+# handwritten Devanagari and never a real name.
+_LATIN_WORD_RE_INNER = re.compile(r"\b(?:[A-Z][a-z]{2,}|[a-z]{3,})\b")
+
+
+def _is_gibberish_for(fname: str, value: str) -> bool:
+    """Reject values that are almost certainly OCR noise, not real content.
+
+    A name-type field with no Devanagari letter and no plausible Latin word is
+    Tesseract falling back to Latin gibberish for handwritten Hindi — e.g. reading
+    सदर as "TAX, TOIT". A short value that is mostly ASCII punctuation is a torn
+    edge or a stray stroke. Devanagari vowel signs (मात्रा, U+093E..U+094D) are
+    Unicode Marks, not Letters — so `.isalnum()` returns False for them; we
+    therefore count only ASCII punctuation, not "everything not-alnum".
+    """
+    ascii_punct = sum(1 for ch in value
+                      if ch in "!\"#$%&'()*+,;<=>?@[\\]^_`{}~“”‘’„«»")
+    if ascii_punct >= 3 and len(value) < 24:
+        return True
+    if fname in _NAME_FIELDS:
+        if not _DEVANAGARI_RE.search(value) and not _LATIN_WORD_RE_INNER.search(value):
+            return True
+    return False
 
 
 def _find_vocab(text: str, vocab: list[str]) -> str | None:

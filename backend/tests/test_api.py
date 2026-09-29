@@ -85,9 +85,24 @@ def test_hindi_document(client):
 
 def test_duplicate_detection(client):
     op = login(client, "operator", "Operate@12345")
+    # Default upload path now rejects byte-identical duplicates outright so the
+    # user gets an immediate 409 with the earlier document id — no wasted OCR.
     with open(SAMPLES / "ror_english_up.png", "rb") as f:
         r = client.post("/api/v1/documents/upload", headers=op, data={"sync": "true"},
                         files={"files": ("again.png", f, "image/png")})
+    assert r.status_code == 409, r.text
+    payload = r.json()["detail"]
+    assert payload["code"] == "duplicate_upload"
+    assert payload["existing_document_id"]
+
+    # Callers that need the older behaviour (upload anyway, let R06 flag it) can
+    # opt in via `allow_duplicate=true`. R06 still fires post-processing so the
+    # duplicate is visible in the validation panel.
+    with open(SAMPLES / "ror_english_up.png", "rb") as f:
+        r = client.post("/api/v1/documents/upload", headers=op,
+                        data={"sync": "true", "allow_duplicate": "true"},
+                        files={"files": ("again.png", f, "image/png")})
+    assert r.status_code == 201
     d = client.get(f"/api/v1/documents/{r.json()[0]['id']}", headers=op).json()
     dup = [v for v in d["validations"] if v["rule_id"] == "R06_duplicate_document"][0]
     assert dup["passed"] is False and dup["severity"] == "error"
