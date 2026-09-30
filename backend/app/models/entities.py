@@ -92,6 +92,12 @@ class ExtractedField(Base):
     bbox: Mapped[dict | None] = mapped_column(JSON, nullable=True)   # {x,y,w,h} on page for UI highlight
     corrected_value: Mapped[str | None] = mapped_column(Text, nullable=True)
     corrected_by: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    # Shadow-Mode: parallel readings from an independent extraction pipeline.
+    # When the primary and shadow AIs disagree, the row is routed to a human.
+    shadow_value: Mapped[str | None] = mapped_column(Text, nullable=True)
+    shadow_source: Mapped[str | None] = mapped_column(String(48), nullable=True)
+    shadow_agreement: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    # "agree" | "disagree" | "only_primary" | "only_shadow"
 
     document: Mapped[Document] = relationship(back_populates="fields")
 

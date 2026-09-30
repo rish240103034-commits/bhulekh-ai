@@ -56,6 +56,12 @@ class FieldOut(ORM):
     page: int
     bbox: dict | None
     corrected_value: str | None
+    # Shadow-Mode: independent AI's reading for the same field, and how it
+    # compared. Populated whenever the two extraction passes ran; the UI uses
+    # these to render side-by-side and to flag "human decides" mismatches.
+    shadow_value: str | None = None
+    shadow_source: str | None = None
+    shadow_agreement: str | None = None
 
 
 class ValidationOut(ORM):

@@ -60,6 +60,81 @@ def _merge_fields(primary: ExtractionOutput, secondary: ExtractionOutput) -> dic
     return merged
 
 
+def _normalize_for_compare(v: str) -> str:
+    """Aggressive normalisation for Shadow-Mode value comparison.
+
+    Two OCR passes almost never produce byte-identical strings even when they
+    agree — one has a trailing space, the other has a Devanagari digit for an
+    ASCII one, one includes a stray quote. Strip everything cosmetic and
+    compare the residue: whitespace collapsed, case flattened, punctuation
+    stripped, ASCII/Devanagari digits unified.
+    """
+    from app.pipeline.extract import DEVANAGARI_DIGITS
+
+    if not v:
+        return ""
+    x = v.translate(DEVANAGARI_DIGITS).lower()
+    x = "".join(c for c in x if c.isalnum() or c.isspace())
+    return " ".join(x.split())
+
+
+def _compare_shadow(name: str, primary: Extracted | None,
+                    shadow: Extracted | None, winner: Extracted
+                    ) -> tuple[str, str | None, str | None]:
+    """Return (agreement, shadow_value_to_store, shadow_source).
+
+    winner is what the merged pipeline chose. primary is the region-OCR reading
+    (rich label context); shadow is the full-page reading (independent
+    segmentation). If both saw the field and normalise-equal, agree. If both
+    saw it and differ, disagree and record the other reading. If only one
+    saw it, mark accordingly.
+    """
+    p_val = primary.value if primary else None
+    s_val = shadow.value if shadow else None
+    if p_val and s_val:
+        if _normalize_for_compare(p_val) == _normalize_for_compare(s_val):
+            return "agree", None, None
+        # Winner is stored on the field's own value; the OTHER reading is the shadow.
+        other = shadow if winner is primary or winner.value == p_val else primary
+        return "disagree", other.value, other.source
+    if p_val and not s_val:
+        return "only_primary", None, None
+    if s_val and not p_val:
+        return "only_shadow", None, None
+    return "only_primary", None, None
+
+
+def _shadow_summary(fields: dict[str, Extracted]) -> dict:
+    """Roll up per-field shadow agreements into a document-level summary."""
+    counts = {"agree": 0, "disagree": 0, "only_primary": 0, "only_shadow": 0}
+    disagreements: list[dict] = []
+    for f in fields.values():
+        if f.source == "metadata":
+            continue
+        state = f.shadow_agreement or "only_primary"
+        counts[state] = counts.get(state, 0) + 1
+        if state == "disagree":
+            disagreements.append({
+                "field": f.field_name,
+                "primary_value": f.value,
+                "shadow_value": f.shadow_value,
+                "shadow_source": f.shadow_source,
+            })
+    total = sum(counts.values())
+    verified = counts["agree"]
+    return {
+        "primary_engine": "region-ocr+labels+patterns",
+        "shadow_engine": "full-page-ocr+independent-extraction",
+        "compared": total,
+        "verified_by_shadow": verified,
+        "disagreements": counts["disagree"],
+        "only_primary": counts["only_primary"],
+        "only_shadow": counts["only_shadow"],
+        "verification_rate": round(100 * verified / total, 1) if total else 0.0,
+        "disagreement_details": disagreements,
+    }
+
+
 def _language_orderings(language: str) -> list[str]:
     """Return the language strings to run OCR with, reversed second-first when applicable.
 
@@ -218,12 +293,25 @@ def process_document(db: Session, doc: Document) -> Document:
                 if table.rows:
                     all_text.append(_table_as_text(table))
 
+            # Shadow-Mode compare: region_ext acts as PRIMARY (dedicated region OCR,
+            # higher label recall) and page_ext acts as SHADOW (independent full-page
+            # OCR + extraction, different segmentation). Their per-field disagreements
+            # are the demo signal for "AI vs AI, human decides".
+            region_by_name = {f.field_name: f for f in region_ext.fields}
+            page_by_name = {f.field_name: f for f in page_ext.fields}
+
             q_factor = 0.85 + 0.15 * (pre["quality"] / 100)
             for name, f in _merge_fields(region_ext, page_ext).items():
                 if name in DIGIT_ONLY_FIELDS and not any(ch.isdigit() for ch in f.value):
                     continue          # a number field holding no number is not a reading
 
                 f.confidence = round(f.confidence * q_factor * reliability.get(name, 1.0), 1)
+                shadow_agreement, shadow_value, shadow_source = _compare_shadow(
+                    name, region_by_name.get(name), page_by_name.get(name), f)
+                f.shadow_value = shadow_value
+                f.shadow_source = shadow_source
+                f.shadow_agreement = shadow_agreement
+
                 if name not in all_fields or all_fields[name].confidence < f.confidence:
                     all_fields[name] = f
 
@@ -248,12 +336,20 @@ def process_document(db: Session, doc: Document) -> Document:
             value, learned = lexicon.apply(f.field_name, f.value)
             conf = min(99.0, f.confidence + 10) if learned else f.confidence
             confs.append(conf)
+            # Shadow-Mode disagreement always routes a field to human review,
+            # regardless of the primary AI's own confidence — that is exactly
+            # the case where the reviewer's judgement is worth the most.
+            needs_review = (conf < settings.auto_accept_threshold
+                            or f.shadow_agreement == "disagree")
             db.add(ExtractedField(
                 document_id=doc.id, field_name=f.field_name, value=f.value,
                 normalized_value=normalize_field(f.field_name, value), confidence=conf,
-                needs_review=conf < settings.auto_accept_threshold,
+                needs_review=needs_review,
                 source="learned" if learned else f.source, page=f.page,
                 bbox=f.value_bbox or f.bbox,
+                shadow_value=f.shadow_value,
+                shadow_source=f.shadow_source,
+                shadow_agreement=f.shadow_agreement,
             ))
 
         _replace_parcels(db, doc, parcels, lexicon)
@@ -267,7 +363,15 @@ def process_document(db: Session, doc: Document) -> Document:
 
         results = validate_document(db, doc)
         has_error = any(r.severity == "error" and not r.passed for r in results)
-        if not has_error and doc.overall_confidence >= settings.auto_accept_threshold and confs:
+        # Shadow-Mode summary: how the primary and shadow AIs compared, so the UI
+        # can display "Shadow AI verified N of M fields" up front and block
+        # auto-verification whenever they disagree on anything.
+        shadow_stats = _shadow_summary(all_fields)
+        diagnostics["shadow_mode"] = shadow_stats
+        doc.diagnostics = diagnostics
+        has_shadow_disagreement = shadow_stats["disagreements"] > 0
+        if (not has_error and not has_shadow_disagreement
+                and doc.overall_confidence >= settings.auto_accept_threshold and confs):
             doc.status = DocStatus.AUTO_VERIFIED
             doc.record.is_verified = True
             doc.record.verified_by = "system"

@@ -127,6 +127,10 @@ class Extracted:
     bbox: dict | None = None
     value_bbox: dict | None = None
     evidence: str = ""
+    # Shadow-Mode: reading from the independent shadow AI when it differs.
+    shadow_value: str | None = None
+    shadow_source: str | None = None
+    shadow_agreement: str | None = None   # "agree" | "disagree" | "only_primary"
 
 
 @dataclass

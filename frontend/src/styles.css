@@ -78,7 +78,11 @@ tr.clickable:hover { background: #f0f5fb; cursor: pointer; }
 .fieldrow.missing input { border-color: var(--brand-2); border-style: dashed; background: #f5faff; }
 .fieldrow.missing input::placeholder { color: var(--brand-2); font-style: italic; }
 .fieldrow.missing:focus-within input { border-style: solid; background: #fff; box-shadow: 0 0 0 2px rgba(46, 117, 182, 0.25); }
+.fieldrow.shadow-mismatch input { border-color: var(--err); background: #fef4f2; }
+.fieldrow.shadow-mismatch:focus-within input { box-shadow: 0 0 0 2px rgba(192, 57, 43, 0.25); }
 .fieldrow .name { font-size: 12px; color: var(--muted); }
+.shadow-alt { margin-top: 4px; font-size: 12px; color: var(--err); display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.shadow-alt b { color: var(--ink); }
 .muted { color: var(--muted); }
 pre.ocr { white-space: pre-wrap; font-size: 12px; background: #f7f9fb; padding: 10px; border-radius: 8px; max-height: 260px; overflow: auto; }
 .login { min-height: 100vh; display: grid; place-items: center; background: linear-gradient(135deg, #1f4e79, #2e75b6); }

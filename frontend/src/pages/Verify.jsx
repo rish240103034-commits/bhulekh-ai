@@ -106,6 +106,7 @@ export default function Verify() {
       {doc.error && <div className="alert err">{doc.error}</div>}
       {doc.diagnostics?.warning && <div className="alert warn">{doc.diagnostics.warning}</div>}
       {msg && <div className={`alert ${msg.ok ? 'ok' : 'err'}`}>{msg.text}</div>}
+      <ShadowModeBanner diagnostics={doc.diagnostics} />
 
       <div className="verify">
         <div className="card">
@@ -138,24 +139,42 @@ export default function Verify() {
             const review = f ? f.needs_review && !f.corrected_value : false
             const suggList = suggestions[n] || []
             const listId = suggList.length ? `sugg-${n}` : undefined
+            const shadowMismatch = f?.shadow_agreement === 'disagree'
             return (
               <div key={n} id={`fld-${n}`}
-                   className={`fieldrow ${missing ? 'missing' : ''} ${review ? 'review' : ''}`}
+                   className={`fieldrow ${missing ? 'missing' : ''} ${review ? 'review' : ''} ${shadowMismatch ? 'shadow-mismatch' : ''}`}
                    onClick={() => highlight(f)}>
                 <div className="name">{LABEL(n)}{f?.source === 'human' && ' ✓'}{f?.source === 'learned' && ' ⟲'}</div>
-                <input type="text" value={values[n] ?? ''} disabled={!canVerify}
-                  list={listId}
-                  placeholder={f ? '' : (canVerify ? 'not found — please enter manually' : 'not found')}
-                  onChange={(e) => setValues({ ...values, [n]: e.target.value })}
-                  onClick={(e) => e.stopPropagation()}
-                  title={f?.value ? `OCR raw: ${f.value}` : (suggList.length ? `${suggList.length} suggestions from your village history` : '')} />
-                {listId && (
-                  <datalist id={listId}>
-                    {suggList.map((v) => <option key={v} value={v} />)}
-                  </datalist>
-                )}
+                <div>
+                  <input type="text" value={values[n] ?? ''} disabled={!canVerify}
+                    list={listId}
+                    placeholder={f ? '' : (canVerify ? 'not found — please enter manually' : 'not found')}
+                    onChange={(e) => setValues({ ...values, [n]: e.target.value })}
+                    onClick={(e) => e.stopPropagation()}
+                    title={f?.value ? `OCR raw: ${f.value}` : (suggList.length ? `${suggList.length} suggestions from your village history` : '')} />
+                  {shadowMismatch && (
+                    <div className="shadow-alt" onClick={(e) => e.stopPropagation()}>
+                      <span title="Independent shadow AI read this differently — pick one or type the correct value.">⚠ Shadow AI read: <b>{f.shadow_value}</b></span>
+                      {canVerify && (
+                        <>
+                          <button type="button" className="btn sm ghost"
+                                  onClick={() => setValues({ ...values, [n]: f.shadow_value })}>Use shadow</button>
+                          <button type="button" className="btn sm ghost"
+                                  onClick={() => setValues({ ...values, [n]: f.value })}>Keep primary</button>
+                        </>
+                      )}
+                    </div>
+                  )}
+                  {listId && (
+                    <datalist id={listId}>
+                      {suggList.map((v) => <option key={v} value={v} />)}
+                    </datalist>
+                  )}
+                </div>
                 <div>{f
-                  ? <Conf v={f.confidence} />
+                  ? (shadowMismatch
+                      ? <span className="badge error" title="Primary and shadow AI disagree — human verification required">shadow ✗</span>
+                      : <Conf v={f.confidence} />)
                   : filledIn ? <span className="badge info">filled by you</span>
                              : suggList.length > 0
                                  ? <span className="badge info" title={`${suggList.length} suggestion(s) available`}>{suggList.length} sugg</span>
@@ -196,6 +215,34 @@ export default function Verify() {
         </div>
       )}
     </>
+  )
+}
+
+
+function ShadowModeBanner({ diagnostics }) {
+  const s = diagnostics?.shadow_mode
+  if (!s || s.compared === 0) return null
+  const rate = s.verification_rate ?? 0
+  const cls = s.disagreements > 0 ? 'warn' : 'ok'
+  return (
+    <div className={`alert ${cls}`} style={{ marginBottom: 10 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+        <span style={{ fontSize: 18 }} title="Two independent AI pipelines">👁‍🗨</span>
+        <div style={{ flex: 1 }}>
+          <b>Shadow-Mode AI verification: {s.verified_by_shadow} of {s.compared} fields cross-verified ({rate}%)</b>
+          <div style={{ fontSize: 12, marginTop: 3 }}>
+            Primary: <code>{s.primary_engine}</code> · Shadow: <code>{s.shadow_engine}</code>
+            {s.only_primary > 0 && ` · ${s.only_primary} field(s) only primary saw`}
+            {s.only_shadow > 0 && ` · ${s.only_shadow} field(s) only shadow saw`}
+          </div>
+        </div>
+        {s.disagreements > 0 && (
+          <span className="badge error" style={{ fontSize: 12 }}>
+            {s.disagreements} disagreement{s.disagreements === 1 ? '' : 's'} — human decides
+          </span>
+        )}
+      </div>
+    </div>
   )
 }
 
