@@ -256,6 +256,31 @@ def reprocess(doc_id: str, db: Session = Depends(get_db), user: User = Depends(r
     return process_document(db, doc)
 
 
+@router.delete("/{doc_id}", status_code=204)
+def delete_document(doc_id: str, db: Session = Depends(get_db),
+                    user: User = Depends(require_roles("admin"))):
+    """Delete a document and every row derived from it. Admin only.
+
+    Cascades take care of ExtractedField / ValidationResult / LandRecord /
+    LandParcel. The stored file on disk is best-effort — if it's already
+    gone (e.g. after a fresh deploy) we still complete the DB delete.
+    """
+    doc = db.get(Document, doc_id)
+    if not doc:
+        raise HTTPException(404, "Document not found")
+    stored = doc.stored_path
+    log_action(db, user.id, user.username, "document.deleted", "document", doc.id,
+               {"filename": doc.original_filename, "status": doc.status.value})
+    db.delete(doc)
+    db.commit()
+    if stored:
+        try:
+            Path(stored).unlink(missing_ok=True)
+        except OSError:
+            pass
+    return None
+
+
 @router.post("/{doc_id}/verify", response_model=DocumentDetail)
 def verify(doc_id: str, body: VerifyIn, request: Request, db: Session = Depends(get_db),
            user: User = Depends(require_roles("verifier"))):
