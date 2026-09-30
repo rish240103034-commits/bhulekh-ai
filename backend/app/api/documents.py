@@ -11,7 +11,7 @@ from app.core.config import settings
 from app.core.database import SessionLocal, get_db
 from app.core.limiter import limit
 from app.core.security import get_current_user, require_roles
-from app.models.entities import DocStatus, Document, ExtractedField, FieldCorrection, LandParcel, User
+from app.models.entities import DocStatus, Document, ExtractedField, FieldCorrection, LandParcel, LandRecord, User
 from app.pipeline.normalize import normalize_field, parse_area
 from app.pipeline.runner import _upsert_record, process_document
 from app.schemas.schemas import DocumentDetail, DocumentOut, DocumentPage, VerifyIn
@@ -256,31 +256,6 @@ def reprocess(doc_id: str, db: Session = Depends(get_db), user: User = Depends(r
     return process_document(db, doc)
 
 
-@router.delete("/{doc_id}", status_code=204)
-def delete_document(doc_id: str, db: Session = Depends(get_db),
-                    user: User = Depends(require_roles("admin"))):
-    """Delete a document and every row derived from it. Admin only.
-
-    Cascades take care of ExtractedField / ValidationResult / LandRecord /
-    LandParcel. The stored file on disk is best-effort — if it's already
-    gone (e.g. after a fresh deploy) we still complete the DB delete.
-    """
-    doc = db.get(Document, doc_id)
-    if not doc:
-        raise HTTPException(404, "Document not found")
-    stored = doc.stored_path
-    log_action(db, user.id, user.username, "document.deleted", "document", doc.id,
-               {"filename": doc.original_filename, "status": doc.status.value})
-    db.delete(doc)
-    db.commit()
-    if stored:
-        try:
-            Path(stored).unlink(missing_ok=True)
-        except OSError:
-            pass
-    return None
-
-
 @router.post("/{doc_id}/verify", response_model=DocumentDetail)
 def verify(doc_id: str, body: VerifyIn, request: Request, db: Session = Depends(get_db),
            user: User = Depends(require_roles("verifier"))):
@@ -404,3 +379,129 @@ def delete_document(doc_id: str, db: Session = Depends(get_db), user: User = Dep
     db.delete(doc)
     db.commit()
     log_action(db, user.id, user.username, "document.deleted", "document", doc_id)
+
+
+@router.post("/reset-demo-data", status_code=201)
+def reset_demo_data(db: Session = Depends(get_db),
+                    user: User = Depends(require_roles("admin"))):
+    """Wipe all documents and seed a rich, pre-baked demo state.
+
+    Skips the Tesseract pipeline entirely — every row is inserted directly.
+    Used to hydrate the live free-tier deployment where real OCR would time
+    out on a shared 0.1 vCPU. Only enabled outside production.
+    """
+    if settings.is_production:
+        raise HTTPException(403, "Demo data reset is disabled in production")
+
+    import uuid as _uuid
+    from datetime import UTC as _UTC, datetime as _dt
+
+    db.query(Document).delete()
+    db.commit()
+
+    ROSTERS = {
+        "Lucknow":       [("Ram Prasad Verma", "Shyam Lal Verma", "wheat", "irrigated"),
+                          ("Sunita Devi", "Har Prasad", "paddy", "irrigated"),
+                          ("Vinod Kumar", "Ram Nath", "wheat", "irrigated"),
+                          ("Kailash Chandra", "Lal Bahadur", "sugarcane", "irrigated"),
+                          ("Manoj Singh", "Ranveer Singh", "mustard", "unirrigated"),
+                          ("Anita Sharma", "Ram Prakash", "paddy", "irrigated")],
+        "Kanpur Dehat":  [("रामस्वरूप", "जगदीश", "गेहूं", "कृषि"),
+                          ("गोपाल सिंह", "बलदेव सिंह", "धान", "कृषि"),
+                          ("सीताराम", "मोहन लाल", "गेहूं", "कृषि"),
+                          ("शिवकुमार", "देवीदयाल", "जौ", "बंजर"),
+                          ("रामकली देवी", "हरि नारायण", "अरहर", "कृषि"),
+                          ("महेन्द्र पाल", "जय राम", "गेहूं", "कृषि")],
+        "Pune":          [("Sunil Patil", "Balasaheb Patil", "sugarcane", "irrigated"),
+                          ("Sudhir Kadam", "Ganpat Kadam", "onion", "irrigated"),
+                          ("Rajesh Deshmukh", "Pandurang Deshmukh", "grape", "irrigated"),
+                          ("Mangal Jadhav", "Vitthal Jadhav", "wheat", "irrigated"),
+                          ("Bharti Shinde", "Nivrutti Shinde", "vegetables", "irrigated")],
+        "Bhopal":        [("Mohan Lal Sharma", "Radhey Shyam", "soybean", "unirrigated"),
+                          ("Kailash Meena", "Ramesh Meena", "wheat", "irrigated"),
+                          ("Suresh Yadav", "Prakash Yadav", "mustard", "irrigated"),
+                          ("Geeta Bai", "Jagat Ram", "gram", "unirrigated"),
+                          ("Ashok Tiwari", "Mahavir Prasad", "soybean", "irrigated")],
+        "Meerut":        [("Yogesh Kumar", "Devi Prasad", "sugarcane", "irrigated"),
+                          ("Neelam Devi", "Ashok Kumar", "wheat", "irrigated"),
+                          ("Rajkumar", "Girdhari Lal", "paddy", "irrigated"),
+                          ("Vinita Sharma", "Om Prakash", "mustard", "irrigated"),
+                          ("Amit Yadav", "Balbir Singh", "wheat", "irrigated")],
+    }
+    DOCS = [
+        ("ror_english_up.png",            "ror",    "Uttar Pradesh",  "Lucknow",      "Rampur",   "auto_verified", 92.6),
+        ("khasra_hindi_up.png",           "khasra", "Uttar Pradesh",  "Lucknow",      "रामपुर",    "pending_review", 90.5),
+        ("khasra_table_multi_parcel.png", "khasra", "Uttar Pradesh",  "Kanpur Dehat", "बिल्हौर",   "auto_verified", 92.2),
+        ("satbara_mixed_mh.png",          "ror",    "Maharashtra",    "Pune",         "Wagholi",  "pending_review", 87.9),
+        ("mutation_mp_faded.png",         "mutation","Madhya Pradesh","Bhopal",       "Kolar",    "auto_verified", 92.0),
+        ("two_page_bundle.pdf",           "khasra", "Uttar Pradesh",  "Meerut",       "Salempur", "auto_verified", 89.2),
+    ]
+
+    made = {"documents": 0, "parcels": 0, "records": 0}
+    for i, (fname, dtype, state, district, village, status, conf) in enumerate(DOCS):
+        doc_id = _uuid.uuid4().hex
+        doc = Document(
+            id=doc_id, original_filename=fname, stored_path=f"seeded://{fname}",
+            mime_type="application/pdf" if fname.endswith(".pdf") else "image/png",
+            sha256=_uuid.uuid4().hex, page_count=2 if fname.endswith(".pdf") else 1,
+            doc_type=dtype, language="eng+hin", state=state, district=district,
+            status=DocStatus(status), overall_confidence=conf,
+            ocr_text=f"[seeded demo document — {fname}]",
+            quality_score=88.0, processing_ms=8000, uploaded_by=user.id,
+            diagnostics={"shadow_mode": {
+                "compared": 9, "verified_by_shadow": 9 if status == "auto_verified" else 7,
+                "disagreements": 0 if status == "auto_verified" else 2,
+                "verification_rate": 100.0 if status == "auto_verified" else 77.8,
+                "primary_engine": "region-ocr+labels+patterns",
+                "shadow_engine": "full-page-ocr+independent-extraction"}},
+        )
+        db.add(doc); db.flush()
+        made["documents"] += 1
+
+        roster = ROSTERS[district]
+        base = 100 + i * 7
+        for j in range(random_int_5_or_6(i)):
+            owner, father, crop, land = roster[j % len(roster)]
+            khasra = str(base + j * 3)
+            bigha, biswa = (2 + j % 4), (5 + (j * 3) % 15)
+            area_sqm = round(bigha * 2529.28 + biswa * 126.46, 1)
+            p_conf = round(85 + (j * 3) % 10, 1)
+            db.add(LandParcel(
+                id=_uuid.uuid4().hex, document_id=doc_id, row_index=j,
+                parcel_number=khasra, area_text=f"{bigha} bigha {biswa} biswa",
+                area_value=float(bigha), area_unit="bigha", area_sqm=area_sqm,
+                land_classification=land, crop=crop, owner_name=owner,
+                father_name=father, confidence=p_conf,
+                needs_review=p_conf < 85,
+                field_confidences={"parcel_number": p_conf + 2, "owner_name": p_conf,
+                                    "area": p_conf + 1, "crop": p_conf - 2},
+                page=1, source="seeded", created_at=_dt.now(_UTC),
+            ))
+            made["parcels"] += 1
+
+        # A canonical LandRecord per document so the /database KPI (records) is populated.
+        first_owner, first_father, _, first_land = roster[0]
+        rec = LandRecord(
+            id=_uuid.uuid4().hex, document_id=doc_id, state=state, district=district,
+            tehsil="Sadar" if state == "Uttar Pradesh" else None, village=village,
+            khasra_number=str(base), khata_number=str(45 + i),
+            plot_area_value=float(2 + i), plot_area_unit="bigha",
+            plot_area_sqm=round((2 + i) * 2529.28 + 5 * 126.46, 1),
+            land_classification=first_land, owner_name=first_owner,
+            father_or_husband_name=first_father,
+            is_verified=(status == "auto_verified"),
+            verified_by="system" if status == "auto_verified" else None,
+            verified_at=_dt.now(_UTC) if status == "auto_verified" else None,
+        )
+        db.add(rec)
+        made["records"] += 1
+
+    db.commit()
+    log_action(db, user.id, user.username, "demo.reset", "system", None, made)
+    return {"seeded": made,
+            "message": "Demo data ready — refresh the Records database page."}
+
+
+def random_int_5_or_6(i: int) -> int:
+    """Deterministic 5-or-6 choice per document index so parcel counts vary."""
+    return 6 if i % 2 == 0 else 5
