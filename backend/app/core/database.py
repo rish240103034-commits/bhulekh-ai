@@ -1,4 +1,4 @@
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
 from app.core.config import settings
@@ -19,8 +19,8 @@ def _resolve_database_url(url: str) -> str:
     return url
 
 
-settings.database_url = _resolve_database_url(settings.database_url)
-_is_sqlite = settings.database_url.startswith("sqlite")
+_database_url = _resolve_database_url(settings.database_url)
+_is_sqlite = _database_url.startswith("sqlite")
 
 # SQLite ignores pool sizing; PostgreSQL gets a bounded, recycled pool so a long-running
 # process does not accumulate stale connections behind a proxy or PgBouncer.
@@ -32,7 +32,7 @@ else:
                           max_overflow=settings.db_max_overflow,
                           pool_recycle=settings.db_pool_recycle_s)
 
-engine = create_engine(settings.database_url, **_engine_kwargs)
+engine = create_engine(_database_url, **_engine_kwargs)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 
 
@@ -49,25 +49,39 @@ def get_db():
 
 
 def ensure_sqlite_columns(base) -> None:
-    """Add columns that models gained since the dev database was created.
+    """Add columns that models gained since the database was created.
 
-    create_all() adds new tables but never alters existing ones, so a developer who
-    upgrades would otherwise hit "no such column" and have to delete their data. Only
-    additive, only SQLite; a real deployment uses Alembic against PostgreSQL.
+    create_all() adds new tables but never alters existing ones, so an upgrade that
+    only adds nullable columns to an existing table would otherwise hit "no such
+    column" against the live schema. This helper runs after create_all() and adds
+    missing nullable columns via ALTER TABLE.
+
+    Dialect-neutral: both SQLite and PostgreSQL support `ALTER TABLE ... ADD COLUMN`
+    with the same shape for nullable additions, and both are handled here (name kept
+    for backward compatibility with existing imports). Only additive, never a
+    rename or a drop. A real production deployment would still use Alembic for
+    non-nullable changes and data migrations.
     """
-    if not settings.database_url.startswith("sqlite"):
-        return
-    from sqlalchemy import text
+    from sqlalchemy import inspect
 
+    inspector = inspect(engine)
+    tables_present = set(inspector.get_table_names())
     with engine.begin() as conn:
-        existing = {row[0] for row in conn.execute(text(
-            "SELECT name FROM sqlite_master WHERE type='table'"))}
         for table in base.metadata.sorted_tables:
-            if table.name not in existing:
+            if table.name not in tables_present:
                 continue
-            present = {row[1] for row in conn.execute(text(f"PRAGMA table_info('{table.name}')"))}
+            existing_cols = {c["name"] for c in inspector.get_columns(table.name)}
             for column in table.columns:
-                if column.name in present:
+                if column.name in existing_cols:
                     continue
-                ddl = column.type.compile(engine.dialect)
-                conn.execute(text(f'ALTER TABLE "{table.name}" ADD COLUMN "{column.name}" {ddl}'))
+                # Only add nullable columns automatically — anything else needs an
+                # explicit migration to decide the default / backfill strategy.
+                if not column.nullable:
+                    continue
+                col_type = column.type.compile(engine.dialect)
+                # Both SQLite and PostgreSQL accept this shape; the dialect-compiled
+                # type differs (TEXT vs VARCHAR etc.), which is exactly what we want.
+                stmt = text(
+                    f'ALTER TABLE "{table.name}" ADD COLUMN "{column.name}" {col_type}'
+                )
+                conn.execute(stmt)
