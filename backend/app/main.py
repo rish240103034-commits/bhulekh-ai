@@ -25,8 +25,59 @@ from app.models.entities import ExternalRecord, User
 logger = get_logger("app")
 
 
+async def _keepalive_loop() -> None:
+    """Periodically ping our own public URL to keep the free-tier instance warm.
+
+    Render (and similar hosts) spin the free-tier service down after ~15 min of
+    no external traffic; the next request pays a 30-50 s cold-start. Making one
+    HTTP request every N seconds — from within the process, going OUT through
+    the platform to the public URL — counts as external traffic and keeps the
+    instance awake.
+
+    Runs only when ``BHULEKH_KEEPALIVE_ENABLED=true`` and a URL is resolvable
+    (either ``BHULEKH_KEEPALIVE_URL`` explicitly or Render's own
+    ``RENDER_EXTERNAL_URL`` env var). Off by default so local dev doesn't spam
+    its own /livez.
+    """
+    import asyncio
+    import os
+
+    import httpx
+
+    url = settings.keepalive_url or os.environ.get("RENDER_EXTERNAL_URL")
+    if not url:
+        logger.info("keepalive_disabled_no_url")
+        return
+    ping = url.rstrip("/") + "/livez"
+    interval = max(60, settings.keepalive_interval_s)
+    logger.info("keepalive_starting", extra={"url": ping, "interval_s": interval})
+
+    # Give the app a moment to finish booting before the first ping.
+    try:
+        await asyncio.sleep(60)
+    except asyncio.CancelledError:
+        return
+
+    async with httpx.AsyncClient(timeout=15) as client:
+        while True:
+            try:
+                r = await client.get(ping)
+                logger.info("keepalive_ping",
+                            extra={"status": r.status_code, "url": ping})
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("keepalive_failed", extra={"error": str(exc)[:200]})
+            try:
+                await asyncio.sleep(interval)
+            except asyncio.CancelledError:
+                return
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    import asyncio
+
     configure_logging()
     # In production the schema is owned by Alembic migrations; create_all() is a
     # developer convenience for SQLite so `uvicorn app.main:app` just works.
@@ -36,7 +87,21 @@ async def lifespan(_: FastAPI):
     if settings.seed_demo_data:
         seed_demo_data()
     logger.info("startup", extra={"environment": settings.environment, "version": settings.version})
+
+    # Optional free-tier keep-alive. The task holds no request-scoped state so
+    # cancelling on shutdown is safe.
+    keepalive_task: asyncio.Task | None = None
+    if settings.keepalive_enabled:
+        keepalive_task = asyncio.create_task(_keepalive_loop())
+
     yield
+
+    if keepalive_task is not None:
+        keepalive_task.cancel()
+        try:
+            await keepalive_task
+        except (asyncio.CancelledError, Exception):  # noqa: BLE001
+            pass
     logger.info("shutdown")
 
 

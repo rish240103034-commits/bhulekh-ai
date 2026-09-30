@@ -62,3 +62,9 @@ services:
         value: "false"
       - key: BHULEKH_OCR_TIMEOUT_S
         value: "30"
+      # Keep the free-tier instance warm. Render exposes RENDER_EXTERNAL_URL
+      # automatically; our keep-alive loop pings /livez on it every 10 min.
+      - key: BHULEKH_KEEPALIVE_ENABLED
+        value: "true"
+      - key: BHULEKH_KEEPALIVE_INTERVAL_S
+        value: "600"

@@ -87,6 +87,16 @@ class Settings(BaseSettings):
     multi_language_ocr: bool = True             # BHULEKH_MULTI_LANGUAGE_OCR
     shadow_mode_enabled: bool = True            # BHULEKH_SHADOW_MODE_ENABLED
 
+    # ---- Free-tier keep-alive ----
+    # Render's free tier spins the service down after ~15 min of no external
+    # traffic; the first request after that takes 30-50 s to wake up. Setting
+    # keepalive_enabled=true launches an in-process task that pings the public
+    # URL every N seconds, counting as external traffic and keeping the demo
+    # instance warm. Off by default so local dev doesn't spam its own /livez.
+    keepalive_enabled: bool = False             # BHULEKH_KEEPALIVE_ENABLED
+    keepalive_url: str | None = None            # BHULEKH_KEEPALIVE_URL, falls back to RENDER_EXTERNAL_URL
+    keepalive_interval_s: int = 600             # BHULEKH_KEEPALIVE_INTERVAL_S — 10 min
+
     # ---- Pipeline thresholds ----
     auto_accept_threshold: float = 85.0
     review_threshold: float = 60.0
