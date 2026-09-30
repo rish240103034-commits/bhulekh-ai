@@ -51,3 +51,14 @@ services:
         value: "true"
       - key: BHULEKH_LOG_JSON
         value: "true"
+      # Render's free tier is ~0.1 vCPU: each Tesseract call takes several
+      # seconds, so the heavy passes (4-way rotation detection + double
+      # language-ordering region OCR) push a single upload past the 60-120 s
+      # gunicorn timeout. Turn them off here so the demo stays responsive;
+      # local dev keeps them on for max accuracy.
+      - key: BHULEKH_AUTO_ROTATE
+        value: "false"
+      - key: BHULEKH_MULTI_LANGUAGE_OCR
+        value: "false"
+      - key: BHULEKH_OCR_TIMEOUT_S
+        value: "30"

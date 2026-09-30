@@ -79,6 +79,13 @@ class Settings(BaseSettings):
     tesseract_cmd: str | None = None
     poppler_path: str | None = None
     tessdata_dir: str | None = None
+    # Pipeline heavy-passes — expensive on constrained CPU (Render free tier)
+    # where they can push total processing over 150 s and hit gunicorn timeout.
+    # Both default true (best accuracy in development); a deploy on a small
+    # instance sets them off via env vars.
+    auto_rotate: bool = True                    # BHULEKH_AUTO_ROTATE
+    multi_language_ocr: bool = True             # BHULEKH_MULTI_LANGUAGE_OCR
+    shadow_mode_enabled: bool = True            # BHULEKH_SHADOW_MODE_ENABLED
 
     # ---- Pipeline thresholds ----
     auto_accept_threshold: float = 85.0

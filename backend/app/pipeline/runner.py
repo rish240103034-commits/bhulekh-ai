@@ -141,9 +141,12 @@ def _language_orderings(language: str) -> list[str]:
     Tesseract's Devanagari output depends on which pack is primary in the lang string:
     "eng+hin" biases tie-breaks toward Latin and misreads handwritten `ग्राम` as `MA`;
     "hin+eng" reads it correctly. Running both catches labels that only one ordering sees.
+
+    On constrained instances (Render free tier) the second pass is too expensive —
+    set BHULEKH_MULTI_LANGUAGE_OCR=false to skip it.
     """
     parts = [p for p in language.replace(",", "+").split("+") if p]
-    if len(parts) <= 1:
+    if len(parts) <= 1 or not settings.multi_language_ocr:
         return [language]
     reversed_ = "+".join(reversed(parts))
     return [language, reversed_]
@@ -210,7 +213,11 @@ def process_document(db: Session, doc: Document) -> Document:
         for pno, img in enumerate(pages, start=1):
             # Guard against wrong uploads (blank photo, selfie, floor picture).
             # Failing fast here beats a 20-second OCR pass returning nothing.
-            ok, reason = looks_like_document(img)
+            # Errors in the guard are ignored — we prefer to attempt OCR.
+            try:
+                ok, reason = looks_like_document(img)
+            except Exception:  # noqa: BLE001
+                ok, reason = True, ""
             if not ok:
                 diagnostics["pages"].append({
                     "page": pno, "quality": 0.0, "skew": 0.0,
@@ -223,10 +230,17 @@ def process_document(db: Session, doc: Document) -> Document:
 
             # Sideways phone photos are common: someone shoots landscape while
             # the document itself is portrait, or an ID card upside-down. Try
-            # each 90° orientation and keep the one that reads best.
-            angle, rot_conf = detect_rotation(img)
-            if angle != 0:
-                img = apply_rotation(img, angle)
+            # each 90° orientation and keep the one that reads best. Costs 4
+            # Tesseract calls, so it's skipped on constrained instances via the
+            # BHULEKH_AUTO_ROTATE=false env var.
+            angle, rot_conf = 0, 0.0
+            if settings.auto_rotate:
+                try:
+                    angle, rot_conf = detect_rotation(img)
+                except Exception:  # noqa: BLE001
+                    angle, rot_conf = 0, 0.0
+                if angle != 0:
+                    img = apply_rotation(img, angle)
 
             # If this is a phone photo of a document on a background, warp it to an
             # orthogonal rectangle first — otherwise Tesseract OCRs the background too
@@ -306,11 +320,16 @@ def process_document(db: Session, doc: Document) -> Document:
                     continue          # a number field holding no number is not a reading
 
                 f.confidence = round(f.confidence * q_factor * reliability.get(name, 1.0), 1)
-                shadow_agreement, shadow_value, shadow_source = _compare_shadow(
-                    name, region_by_name.get(name), page_by_name.get(name), f)
-                f.shadow_value = shadow_value
-                f.shadow_source = shadow_source
-                f.shadow_agreement = shadow_agreement
+                # Shadow comparison is auxiliary — never let a bug in it fail
+                # the whole document. Best-effort with a safe default on error.
+                try:
+                    agreement, s_value, s_source = _compare_shadow(
+                        name, region_by_name.get(name), page_by_name.get(name), f)
+                except Exception:  # noqa: BLE001
+                    agreement, s_value, s_source = "only_primary", None, None
+                f.shadow_value = s_value
+                f.shadow_source = s_source
+                f.shadow_agreement = agreement
 
                 if name not in all_fields or all_fields[name].confidence < f.confidence:
                     all_fields[name] = f
@@ -366,10 +385,14 @@ def process_document(db: Session, doc: Document) -> Document:
         # Shadow-Mode summary: how the primary and shadow AIs compared, so the UI
         # can display "Shadow AI verified N of M fields" up front and block
         # auto-verification whenever they disagree on anything.
-        shadow_stats = _shadow_summary(all_fields)
+        try:
+            shadow_stats = _shadow_summary(all_fields)
+        except Exception:  # noqa: BLE001
+            shadow_stats = {"compared": 0, "verified_by_shadow": 0,
+                            "disagreements": 0, "verification_rate": 0.0}
         diagnostics["shadow_mode"] = shadow_stats
         doc.diagnostics = diagnostics
-        has_shadow_disagreement = shadow_stats["disagreements"] > 0
+        has_shadow_disagreement = shadow_stats.get("disagreements", 0) > 0
         if (not has_error and not has_shadow_disagreement
                 and doc.overall_confidence >= settings.auto_accept_threshold and confs):
             doc.status = DocStatus.AUTO_VERIFIED
